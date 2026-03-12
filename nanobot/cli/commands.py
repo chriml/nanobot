@@ -262,12 +262,16 @@ def onboard(
         set_config_path(config_path)
         console.print(f"[dim]Using config: {config_path}[/dim]")
     else:
-        config_path = get_config_path()
+        config = Config()
+        save_config(config)
+        console.print(f"[green]✓[/green] Created config at {config_path}")
 
-    def _apply_workspace_override(loaded: Config) -> Config:
-        if workspace:
-            loaded.agents.defaults.workspace = workspace
-        return loaded
+    console.print("[dim]Config template now uses `maxTokens` + `contextWindowTokens`; `memoryWindow` is no longer a runtime setting.[/dim]")
+    codex_logged_in = _run_openai_codex_onboarding_login()
+
+    if _configure_bitwarden_onboarding(config):
+        save_config(config)
+        console.print("[green]✓[/green] Bitwarden MCP access saved to your config")
 
     # Create or update config
     if config_path.exists():
@@ -327,20 +331,135 @@ def onboard(
 
     console.print(f"\n{__logo__} nanobot is ready!")
     console.print("\nNext steps:")
-    if wizard:
-        console.print(f"  1. Chat: [cyan]{agent_cmd}[/cyan]")
-        console.print(f"  2. Start gateway: [cyan]{gateway_cmd}[/cyan]")
+    if codex_logged_in:
+        console.print("  1. Chat: [cyan]nanobot agent -m \"Hello!\"[/cyan]")
+        console.print("     Default model: [cyan]openai-codex/gpt-5.4[/cyan]")
+        console.print("  2. Optional: ask nanobot to use Bitwarden after you enable the Bitwarden MCP server")
     else:
-        console.print(f"  1. Add your API key to [cyan]{config_path}[/cyan]")
-        console.print("     Get one at: https://openrouter.ai/keys")
-        console.print(f"  2. Chat: [cyan]{agent_cmd}[/cyan]")
+        console.print("  1. Sign in to OpenAI Codex: [cyan]nanobot provider login openai-codex[/cyan]")
+        console.print("     Default model: [cyan]openai-codex/gpt-5.4[/cyan]")
+        console.print("  2. Chat: [cyan]nanobot agent -m \"Hello!\"[/cyan]")
+        console.print("  3. Optional: ask nanobot to use Bitwarden after you enable the Bitwarden MCP server")
     console.print("\n[dim]Want Telegram/WhatsApp? See: https://github.com/HKUDS/nanobot#-chat-apps[/dim]")
 
 
-def _merge_missing_defaults(existing: Any, defaults: Any) -> Any:
-    """Recursively fill in missing values from defaults without overwriting user config."""
-    if not isinstance(existing, dict) or not isinstance(defaults, dict):
-        return existing
+def _supports_interactive_onboarding() -> bool:
+    """Return True when prompts are safe to show during onboarding."""
+    try:
+        return sys.stdin.isatty() and sys.stdout.isatty()
+    except Exception:
+        return False
+
+
+def _run_openai_codex_onboarding_login() -> bool:
+    """Authenticate with OpenAI Codex during interactive onboarding."""
+    if not _supports_interactive_onboarding():
+        console.print(
+            "[dim]OpenAI Codex login skipped because onboarding is running non-interactively. "
+            "Run `nanobot provider login openai-codex` later if needed.[/dim]"
+        )
+        return False
+
+    console.print("\n[bold]Default:[/bold] sign in to OpenAI Codex for the default provider.")
+    _login_openai_codex()
+    return True
+
+
+def _configure_bitwarden_onboarding(config: Config) -> bool:
+    """Optionally scaffold Bitwarden MCP access in config.json."""
+    from nanobot.config.schema import MCPServerConfig
+
+    if not _supports_interactive_onboarding():
+        console.print(
+            "[dim]Bitwarden setup skipped because onboarding is running non-interactively. "
+            "You can add it later under tools.mcpServers.bitwarden.[/dim]"
+        )
+        return False
+
+    existing = config.tools.mcp_servers.get("bitwarden")
+    existing_env = dict(existing.env) if existing else {}
+    has_existing = existing is not None and (
+        bool(existing.command)
+        or bool(existing.url)
+        or bool(existing.args)
+        or bool(existing_env)
+    )
+
+    if has_existing:
+        console.print("[dim]Bitwarden MCP is already configured.[/dim]")
+        if not typer.confirm("Update Bitwarden access?", default=False):
+            return False
+    else:
+        console.print(
+            "\n[bold]Optional:[/bold] configure permanent Bitwarden vault access for nanobot via MCP."
+        )
+        console.print(
+            "[dim]This stores Bitwarden credentials in ~/.nanobot/config.json. "
+            "Skip this step entirely if you do not want Bitwarden access now.[/dim]"
+        )
+        if not typer.confirm("Configure Bitwarden now?", default=False):
+            return False
+
+    bitwarden = existing or MCPServerConfig()
+    bitwarden.type = "stdio"
+    bitwarden.command = "nanobot"
+    bitwarden.args = ["bitwarden-mcp"]
+    bitwarden.tool_timeout = max(bitwarden.tool_timeout, 60)
+
+    env = {
+        key: value
+        for key, value in existing_env.items()
+        if key
+        not in {
+            "BW_CLIENTID",
+            "BW_CLIENTSECRET",
+            "BW_PASSWORD_FILE",
+        }
+    }
+
+    client_id = typer.prompt(
+        "Bitwarden CLI client ID (BW_CLIENTID)",
+        default=existing_env.get("BW_CLIENTID", ""),
+        show_default=False,
+    ).strip()
+    client_secret = typer.prompt(
+        "Bitwarden CLI client secret (BW_CLIENTSECRET)",
+        default=existing_env.get("BW_CLIENTSECRET", ""),
+        hide_input=True,
+        show_default=False,
+    ).strip()
+    password_file = typer.prompt(
+        "Bitwarden password file (BW_PASSWORD_FILE)",
+        default=existing_env.get("BW_PASSWORD_FILE", ""),
+        show_default=False,
+    ).strip()
+
+    if client_id:
+        env["BW_CLIENTID"] = client_id
+    if client_secret:
+        env["BW_CLIENTSECRET"] = client_secret
+    if password_file:
+        env["BW_PASSWORD_FILE"] = password_file
+    if not env.get("BW_CLIENTID") or not env.get("BW_CLIENTSECRET") or not env.get("BW_PASSWORD_FILE"):
+        console.print(
+            "[yellow]Bitwarden setup not saved.[/yellow] "
+            "Permanent access requires BW_CLIENTID, BW_CLIENTSECRET, and BW_PASSWORD_FILE."
+        )
+        return False
+
+    bitwarden.env = env
+    config.tools.mcp_servers["bitwarden"] = bitwarden
+    return True
+
+
+@app.command("bitwarden-mcp", hidden=True)
+def bitwarden_mcp() -> None:
+    """Run the Bitwarden MCP server with permanent Bitwarden access."""
+    from nanobot.integrations.bitwarden_mcp import main as run_bitwarden_mcp
+
+    raise typer.Exit(run_bitwarden_mcp())
+
+
 
     merged = dict(existing)
     for key, value in defaults.items():

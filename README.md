@@ -201,7 +201,7 @@ nanobot channels login whatsapp
 nanobot onboard
 ```
 
-Use `nanobot onboard --wizard` if you want the interactive setup wizard.
+`nanobot onboard` can also scaffold optional Bitwarden MCP access during setup. Skip it if you do not use Bitwarden yet.
 
 **2. Configure** (`~/.nanobot/config.json`)
 
@@ -223,8 +223,7 @@ Configure these **two parts** in your config (other options have defaults).
 {
   "agents": {
     "defaults": {
-      "model": "anthropic/claude-opus-4-5",
-      "provider": "openrouter"
+      "model": "openai-codex/gpt-5.4"
     }
   }
 }
@@ -893,7 +892,7 @@ nanobot provider login openai-codex
 {
   "agents": {
     "defaults": {
-      "model": "openai-codex/gpt-5.1-codex"
+      "model": "openai-codex/gpt-5.4"
     }
   }
 }
@@ -1321,6 +1320,40 @@ Add MCP servers to your `config.json`:
 }
 ```
 
+For Bitwarden, onboarding can generate the MCP block for you, or you can add it manually:
+
+```json
+{
+  "tools": {
+    "mcpServers": {
+      "bitwarden": {
+        "type": "stdio",
+        "command": "nanobot",
+        "args": ["bitwarden-mcp"],
+        "env": {
+          "BW_CLIENTID": "your-personal-api-key-client-id",
+          "BW_CLIENTSECRET": "your-personal-api-key-client-secret",
+          "BW_PASSWORD_FILE": "/path/to/bitwarden-password"
+        },
+        "toolTimeout": 60
+      }
+    }
+  }
+}
+```
+
+This is the permanent-access setup. `nanobot bitwarden-mcp` will use `BW_CLIENTID` / `BW_CLIENTSECRET` plus `BW_PASSWORD_FILE` to log in, unlock the vault, refresh `BW_SESSION`, and then launch the official Bitwarden MCP server.
+
+All three values are required for the permanent-access flow.
+
+If you prefer not to store those values in `config.json`, set them in the environment before starting nanobot:
+
+```bash
+export BW_CLIENTID="your-personal-api-key-client-id"
+export BW_CLIENTSECRET="your-personal-api-key-client-secret"
+export BW_PASSWORD_FILE="$HOME/.config/nanobot/bitwarden-password"
+```
+
 Two transport modes are supported:
 
 | Mode | Config | Example |
@@ -1573,10 +1606,12 @@ The agent can also manage this file itself — ask it to "add a periodic task" a
 ### Docker Compose
 
 ```bash
-docker compose run --rm nanobot-cli onboard   # first-time setup
+docker compose run --rm -it nanobot-cli onboard   # first-time setup, includes optional Bitwarden prompt
 vim ~/.nanobot/config.json                     # add API keys
 docker compose up -d nanobot-gateway           # start gateway
 ```
+
+If you prefer not to store Bitwarden credentials in `config.json`, export `BW_CLIENTID`, `BW_CLIENTSECRET`, and `BW_PASSWORD_FILE` before `docker compose up` so `nanobot bitwarden-mcp` can renew `BW_SESSION` automatically.
 
 ```bash
 docker compose run --rm nanobot-cli agent -m "Hello!"   # run CLI
@@ -1590,8 +1625,8 @@ docker compose down                                      # stop
 # Build the image
 docker build -t nanobot .
 
-# Initialize config (first time only)
-docker run -v ~/.nanobot:/root/.nanobot --rm nanobot onboard
+# Initialize config (first time only; use -it for optional Bitwarden setup)
+docker run -it -v ~/.nanobot:/root/.nanobot --rm nanobot onboard
 
 # Edit config on host to add API keys
 vim ~/.nanobot/config.json
@@ -1603,6 +1638,8 @@ docker run -v ~/.nanobot:/root/.nanobot -p 18790:18790 nanobot gateway
 docker run -v ~/.nanobot:/root/.nanobot --rm nanobot agent -m "Hello!"
 docker run -v ~/.nanobot:/root/.nanobot --rm nanobot status
 ```
+
+The Docker image includes Node.js 22 and the Bitwarden CLI so the Bitwarden MCP server can run inside the container.
 
 ## 🐧 Linux Service
 
