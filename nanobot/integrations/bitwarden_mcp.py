@@ -34,11 +34,14 @@ def ensure_session(env: dict[str, str] | None = None) -> dict[str, str]:
     client_id = prepared.get("BW_CLIENTID")
     client_secret = prepared.get("BW_CLIENTSECRET")
     password_file = prepared.get("BW_PASSWORD_FILE")
-    if not client_id or not client_secret or not password_file:
+    server_url = prepared.get("BW_SERVER_URL")
+    if not server_url or not client_id or not client_secret or not password_file:
         raise RuntimeError(
-            "BW_CLIENTID, BW_CLIENTSECRET, and BW_PASSWORD_FILE are required "
+            "BW_SERVER_URL, BW_CLIENTID, BW_CLIENTSECRET, and BW_PASSWORD_FILE are required "
             "for permanent Bitwarden access"
         )
+    if server_url:
+        _run_command(["bw", "config", "server", server_url], prepared)
 
     status = _load_status(prepared)
     if status == "unauthenticated":

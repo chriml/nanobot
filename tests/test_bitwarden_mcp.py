@@ -6,7 +6,7 @@ from nanobot.integrations.bitwarden_mcp import ensure_session
 
 
 def test_ensure_session_requires_permanent_credentials():
-    with pytest.raises(RuntimeError, match="BW_CLIENTID, BW_CLIENTSECRET, and BW_PASSWORD_FILE"):
+    with pytest.raises(RuntimeError, match="BW_SERVER_URL, BW_CLIENTID, BW_CLIENTSECRET, and BW_PASSWORD_FILE"):
         ensure_session({})
 
 
@@ -15,6 +15,8 @@ def test_ensure_session_logs_in_and_unlocks_with_cli_credentials(monkeypatch):
 
     def fake_run_command(args: list[str], env: dict[str, str]) -> subprocess.CompletedProcess[str]:
         calls.append(args)
+        if args == ["bw", "config", "server", "https://vault.bitwarden.com"]:
+            return subprocess.CompletedProcess(args, 0, "", "")
         if args == ["bw", "status"]:
             return subprocess.CompletedProcess(args, 0, '{"status":"unauthenticated"}', "")
         if args == ["bw", "login", "--apikey"]:
@@ -29,6 +31,7 @@ def test_ensure_session_logs_in_and_unlocks_with_cli_credentials(monkeypatch):
 
     result = ensure_session(
         {
+            "BW_SERVER_URL": "https://vault.bitwarden.com",
             "BW_CLIENTID": "client-id",
             "BW_CLIENTSECRET": "client-secret",
             "BW_PASSWORD_FILE": "/tmp/bw-pass",
@@ -37,6 +40,7 @@ def test_ensure_session_logs_in_and_unlocks_with_cli_credentials(monkeypatch):
 
     assert result["BW_SESSION"] == "session-from-unlock"
     assert calls == [
+        ["bw", "config", "server", "https://vault.bitwarden.com"],
         ["bw", "status"],
         ["bw", "login", "--apikey"],
         ["bw", "unlock", "--raw", "--passwordfile", "/tmp/bw-pass"],
@@ -48,6 +52,8 @@ def test_ensure_session_supports_password_file(monkeypatch):
 
     def fake_run_command(args: list[str], env: dict[str, str]) -> subprocess.CompletedProcess[str]:
         calls.append(args)
+        if args == ["bw", "config", "server", "https://vault.bitwarden.eu"]:
+            return subprocess.CompletedProcess(args, 0, "", "")
         if args == ["bw", "status"]:
             return subprocess.CompletedProcess(args, 0, '{"status":"locked"}', "")
         if args == ["bw", "unlock", "--raw", "--passwordfile", "/tmp/bw-pass"]:
@@ -58,6 +64,7 @@ def test_ensure_session_supports_password_file(monkeypatch):
 
     result = ensure_session(
         {
+            "BW_SERVER_URL": "https://vault.bitwarden.eu",
             "BW_CLIENTID": "client-id",
             "BW_CLIENTSECRET": "client-secret",
             "BW_PASSWORD_FILE": "/tmp/bw-pass",
@@ -66,6 +73,7 @@ def test_ensure_session_supports_password_file(monkeypatch):
 
     assert result["BW_SESSION"] == "session-from-file"
     assert calls == [
+        ["bw", "config", "server", "https://vault.bitwarden.eu"],
         ["bw", "status"],
         ["bw", "unlock", "--raw", "--passwordfile", "/tmp/bw-pass"],
     ]

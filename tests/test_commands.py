@@ -216,7 +216,7 @@ def test_onboard_can_configure_bitwarden_mcp(tmp_path, monkeypatch):
     result = runner.invoke(
         app,
         ["onboard"],
-        input="y\ncli-client-id\ncli-client-secret\nbitwarden-master-password\n",
+        input="y\nus\ncli-client-id\ncli-client-secret\nbitwarden-master-password\n",
     )
 
     assert result.exit_code == 0
@@ -229,6 +229,7 @@ def test_onboard_can_configure_bitwarden_mcp(tmp_path, monkeypatch):
     assert bitwarden["command"] == "nanobot"
     assert bitwarden["args"] == ["bitwarden-mcp"]
     assert bitwarden["toolTimeout"] == 60
+    assert bitwarden["env"]["BW_SERVER_URL"] == "https://vault.bitwarden.com"
     assert bitwarden["env"]["BW_CLIENTID"] == "cli-client-id"
     assert bitwarden["env"]["BW_CLIENTSECRET"] == "cli-client-secret"
     assert bitwarden["env"]["BW_PASSWORD_FILE"] == str(password_file)
@@ -252,7 +253,7 @@ def test_onboard_does_not_save_incomplete_bitwarden_config(tmp_path, monkeypatch
     result = runner.invoke(
         app,
         ["onboard"],
-        input="y\ncli-client-id\ncli-client-secret\n\n",
+        input="y\nus\ncli-client-id\ncli-client-secret\n\n",
     )
 
     assert result.exit_code == 0
@@ -261,6 +262,34 @@ def test_onboard_does_not_save_incomplete_bitwarden_config(tmp_path, monkeypatch
     saved = json.loads(config_path.read_text(encoding="utf-8"))
     assert saved["tools"]["mcpServers"] == {}
     assert not password_file.exists()
+
+
+def test_onboard_can_configure_bitwarden_custom_server(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    workspace = tmp_path / "workspace"
+    password_file = tmp_path / ".nanobot" / "bitwarden-password"
+
+    monkeypatch.setattr("nanobot.config.loader.get_config_path", lambda: config_path)
+    monkeypatch.setattr("nanobot.cli.commands.get_workspace_path", lambda: workspace)
+    monkeypatch.setattr("nanobot.cli.commands._supports_interactive_onboarding", lambda: True)
+    monkeypatch.setattr("nanobot.cli.commands._get_openai_codex_account_id", lambda: None)
+    monkeypatch.setattr("nanobot.cli.commands._login_openai_codex", lambda: None)
+    monkeypatch.setattr("nanobot.cli.commands._configure_channels_onboarding", lambda _config: False)
+    monkeypatch.setattr("nanobot.cli.commands.Path.home", lambda: tmp_path)
+
+    result = runner.invoke(
+        app,
+        ["onboard"],
+        input="y\ncustom\nhttps://vault.example.test\ncli-client-id\ncli-client-secret\nbitwarden-master-password\n",
+    )
+
+    assert result.exit_code == 0
+
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    bitwarden = saved["tools"]["mcpServers"]["bitwarden"]
+
+    assert bitwarden["env"]["BW_SERVER_URL"] == "https://vault.example.test"
+    assert bitwarden["env"]["BW_PASSWORD_FILE"] == str(password_file)
 
 
 def test_onboard_can_configure_telegram_channel(tmp_path, monkeypatch):

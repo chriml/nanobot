@@ -426,8 +426,11 @@ def _configure_bitwarden_onboarding(config: Config) -> bool:
             "BW_CLIENTID",
             "BW_CLIENTSECRET",
             "BW_PASSWORD_FILE",
+            "BW_SERVER_URL",
         }
     }
+
+    server_url = _prompt_bitwarden_server_url(existing_env.get("BW_SERVER_URL", ""))
 
     client_id = _strip_terminal_escapes(typer.prompt(
         "Bitwarden CLI client ID (BW_CLIENTID)",
@@ -470,12 +473,18 @@ def _configure_bitwarden_onboarding(config: Config) -> bool:
     if client_secret:
         env["BW_CLIENTSECRET"] = client_secret
     env["BW_PASSWORD_FILE"] = password_file
+    env["BW_SERVER_URL"] = server_url
     if should_write_password:
         _write_secret_file(password_path, master_password)
-    if not env.get("BW_CLIENTID") or not env.get("BW_CLIENTSECRET") or not env.get("BW_PASSWORD_FILE"):
+    if (
+        not env.get("BW_CLIENTID")
+        or not env.get("BW_CLIENTSECRET")
+        or not env.get("BW_PASSWORD_FILE")
+        or not env.get("BW_SERVER_URL")
+    ):
         console.print(
             "[yellow]Bitwarden setup not saved.[/yellow] "
-            "Permanent access requires BW_CLIENTID, BW_CLIENTSECRET, and BW_PASSWORD_FILE."
+            "Permanent access requires BW_SERVER_URL, BW_CLIENTID, BW_CLIENTSECRET, and BW_PASSWORD_FILE."
         )
         return False
 
@@ -500,6 +509,33 @@ _ANSI_ESCAPE_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])")
 def _strip_terminal_escapes(value: str) -> str:
     """Remove terminal escape sequences accidentally captured during paste."""
     return _ANSI_ESCAPE_RE.sub("", value)
+
+
+def _prompt_bitwarden_server_url(current_url: str) -> str:
+    """Prompt for the Bitwarden server URL."""
+    normalized = current_url.strip().rstrip("/")
+    default_choice = "us"
+    if normalized == "https://vault.bitwarden.eu":
+        default_choice = "eu"
+    elif normalized and normalized != "https://vault.bitwarden.com":
+        default_choice = "custom"
+
+    choice = _prompt_choice(
+        "Bitwarden server",
+        default_choice,
+        ("us", "eu", "custom"),
+    )
+    if choice == "us":
+        return "https://vault.bitwarden.com"
+    if choice == "eu":
+        return "https://vault.bitwarden.eu"
+
+    custom_url = _strip_terminal_escapes(typer.prompt(
+        "Bitwarden custom server URL",
+        default=normalized if normalized and default_choice == "custom" else "",
+        show_default=False,
+    ).strip()).rstrip("/")
+    return custom_url
 
 
 def _configure_channels_onboarding(config: Config) -> bool:
