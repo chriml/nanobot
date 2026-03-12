@@ -1,3 +1,4 @@
+import json
 import shutil
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -54,6 +55,9 @@ def test_onboard_fresh_install(mock_paths):
     assert "Created config" in result.stdout
     assert "Created workspace" in result.stdout
     assert "nanobot is ready" in result.stdout
+    assert "OpenAI Codex login skipped because onboarding is running non-interactively" in result.stdout
+    assert "nanobot provider login openai-codex" in result.stdout
+    assert "openai-codex/gpt-5.4" in result.stdout
     assert config_file.exists()
     assert (workspace_dir / "AGENTS.md").exists()
     assert (workspace_dir / "memory" / "MEMORY.md").exists()
@@ -100,6 +104,101 @@ def test_onboard_existing_workspace_safe_create(mock_paths):
     assert (workspace_dir / "AGENTS.md").exists()
 
 
+def test_onboard_noninteractive_skips_bitwarden_prompt(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    workspace = tmp_path / "workspace"
+
+    monkeypatch.setattr("nanobot.config.loader.get_config_path", lambda: config_path)
+    monkeypatch.setattr("nanobot.cli.commands.get_workspace_path", lambda: workspace)
+    monkeypatch.setattr("nanobot.cli.commands._supports_interactive_onboarding", lambda: False)
+
+    result = runner.invoke(app, ["onboard"])
+
+    assert result.exit_code == 0
+    assert "OpenAI Codex login skipped because onboarding is running non-interactively" in result.stdout
+    assert "Bitwarden setup skipped because onboarding is running non-interactively" in result.stdout
+
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    assert saved["tools"]["mcpServers"] == {}
+
+
+def test_onboard_interactive_runs_openai_codex_login(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    workspace = tmp_path / "workspace"
+    called: dict[str, bool] = {"login": False}
+
+    monkeypatch.setattr("nanobot.config.loader.get_config_path", lambda: config_path)
+    monkeypatch.setattr("nanobot.cli.commands.get_workspace_path", lambda: workspace)
+    monkeypatch.setattr("nanobot.cli.commands._supports_interactive_onboarding", lambda: True)
+    monkeypatch.setattr("nanobot.cli.commands._configure_bitwarden_onboarding", lambda _config: False)
+    monkeypatch.setattr(
+        "nanobot.cli.commands._login_openai_codex",
+        lambda: called.__setitem__("login", True),
+    )
+
+    result = runner.invoke(app, ["onboard"])
+
+    assert result.exit_code == 0
+    assert called["login"] is True
+    assert "Default: sign in to OpenAI Codex for the default provider." in result.stdout
+    assert "nanobot provider login openai-codex" not in result.stdout
+    assert "Default model: openai-codex/gpt-5.4" in result.stdout
+    assert "  1. Chat:" in result.stdout
+
+
+def test_onboard_can_configure_bitwarden_mcp(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    workspace = tmp_path / "workspace"
+
+    monkeypatch.setattr("nanobot.config.loader.get_config_path", lambda: config_path)
+    monkeypatch.setattr("nanobot.cli.commands.get_workspace_path", lambda: workspace)
+    monkeypatch.setattr("nanobot.cli.commands._supports_interactive_onboarding", lambda: True)
+    monkeypatch.setattr("nanobot.cli.commands._login_openai_codex", lambda: None)
+
+    result = runner.invoke(
+        app,
+        ["onboard"],
+        input="y\ncli-client-id\ncli-client-secret\n/tmp/bitwarden-password\n",
+    )
+
+    assert result.exit_code == 0
+    assert "Bitwarden MCP access saved to your config" in result.stdout
+
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    bitwarden = saved["tools"]["mcpServers"]["bitwarden"]
+
+    assert bitwarden["type"] == "stdio"
+    assert bitwarden["command"] == "nanobot"
+    assert bitwarden["args"] == ["bitwarden-mcp"]
+    assert bitwarden["toolTimeout"] == 60
+    assert bitwarden["env"]["BW_CLIENTID"] == "cli-client-id"
+    assert bitwarden["env"]["BW_CLIENTSECRET"] == "cli-client-secret"
+    assert bitwarden["env"]["BW_PASSWORD_FILE"] == "/tmp/bitwarden-password"
+    assert "BW_SESSION" not in bitwarden["env"]
+
+
+def test_onboard_does_not_save_incomplete_bitwarden_config(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    workspace = tmp_path / "workspace"
+
+    monkeypatch.setattr("nanobot.config.loader.get_config_path", lambda: config_path)
+    monkeypatch.setattr("nanobot.cli.commands.get_workspace_path", lambda: workspace)
+    monkeypatch.setattr("nanobot.cli.commands._supports_interactive_onboarding", lambda: True)
+    monkeypatch.setattr("nanobot.cli.commands._login_openai_codex", lambda: None)
+
+    result = runner.invoke(
+        app,
+        ["onboard"],
+        input="y\ncli-client-id\n\n/tmp/bitwarden-password\n",
+    )
+
+    assert result.exit_code == 0
+    assert "Bitwarden setup not saved" in result.stdout
+
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    assert saved["tools"]["mcpServers"] == {}
+
+
 def test_config_matches_github_copilot_codex_with_hyphen_prefix():
     config = Config()
     config.agents.defaults.model = "github-copilot/gpt-5.3-codex"
@@ -107,9 +206,16 @@ def test_config_matches_github_copilot_codex_with_hyphen_prefix():
     assert config.get_provider_name() == "github_copilot"
 
 
+def test_config_defaults_to_latest_openai_codex_model():
+    config = Config()
+
+    assert config.agents.defaults.model == "openai-codex/gpt-5.4"
+    assert config.get_provider_name() == "openai_codex"
+
+
 def test_config_matches_openai_codex_with_hyphen_prefix():
     config = Config()
-    config.agents.defaults.model = "openai-codex/gpt-5.1-codex"
+    config.agents.defaults.model = "openai-codex/gpt-5.4"
 
     assert config.get_provider_name() == "openai_codex"
 
@@ -159,8 +265,8 @@ def test_litellm_provider_canonicalizes_github_copilot_hyphen_prefix():
 
 
 def test_openai_codex_strip_prefix_supports_hyphen_and_underscore():
-    assert _strip_model_prefix("openai-codex/gpt-5.1-codex") == "gpt-5.1-codex"
-    assert _strip_model_prefix("openai_codex/gpt-5.1-codex") == "gpt-5.1-codex"
+    assert _strip_model_prefix("openai-codex/gpt-5.4") == "gpt-5.4"
+    assert _strip_model_prefix("openai_codex/gpt-5.4") == "gpt-5.4"
 
 
 @pytest.fixture
