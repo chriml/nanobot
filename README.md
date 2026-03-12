@@ -194,10 +194,6 @@ nanobot channels login whatsapp
 > [!TIP]
 > Set your API key in `~/.nanobot/config.json`.
 > Get API keys: [OpenRouter](https://openrouter.ai/keys) (Global)
->
-> For other LLM providers, please see the [Providers](#providers) section.
->
-> For web search capability setup, please see [Web Search](#web-search).
 
 **1. Initialize**
 

@@ -9,7 +9,7 @@ import os
 import time
 from contextlib import AsyncExitStack, nullcontext
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Awaitable, Callable
 
 from loguru import logger
 
@@ -59,7 +59,8 @@ class AgentLoop:
         model: str | None = None,
         max_iterations: int = 40,
         context_window_tokens: int = 65_536,
-        web_search_config: WebSearchConfig | None = None,
+        web_search_base_url: str | None = None,
+        web_search_max_results: int = 5,
         web_proxy: str | None = None,
         exec_config: ExecToolConfig | None = None,
         cron_service: CronService | None = None,
@@ -78,7 +79,8 @@ class AgentLoop:
         self.model = model or provider.get_default_model()
         self.max_iterations = max_iterations
         self.context_window_tokens = context_window_tokens
-        self.web_search_config = web_search_config or WebSearchConfig()
+        self.web_search_base_url = web_search_base_url
+        self.web_search_max_results = web_search_max_results
         self.web_proxy = web_proxy
         self.exec_config = exec_config or ExecToolConfig()
         self.cron_service = cron_service
@@ -95,7 +97,8 @@ class AgentLoop:
             workspace=workspace,
             bus=bus,
             model=self.model,
-            web_search_config=self.web_search_config,
+            web_search_base_url=web_search_base_url,
+            web_search_max_results=web_search_max_results,
             web_proxy=web_proxy,
             exec_config=self.exec_config,
             restrict_to_workspace=restrict_to_workspace,
@@ -135,14 +138,17 @@ class AgentLoop:
         self.tools.register(ReadFileTool(workspace=self.workspace, allowed_dir=allowed_dir, extra_allowed_dirs=extra_read))
         for cls in (WriteFileTool, EditFileTool, ListDirTool):
             self.tools.register(cls(workspace=self.workspace, allowed_dir=allowed_dir))
-        if self.exec_config.enable:
-            self.tools.register(ExecTool(
-                working_dir=str(self.workspace),
-                timeout=self.exec_config.timeout,
-                restrict_to_workspace=self.restrict_to_workspace,
-                path_append=self.exec_config.path_append,
-            ))
-        self.tools.register(WebSearchTool(config=self.web_search_config, proxy=self.web_proxy))
+        self.tools.register(ExecTool(
+            working_dir=str(self.workspace),
+            timeout=self.exec_config.timeout,
+            restrict_to_workspace=self.restrict_to_workspace,
+            path_append=self.exec_config.path_append,
+        ))
+        self.tools.register(WebSearchTool(
+            base_url=self.web_search_base_url,
+            max_results=self.web_search_max_results,
+            proxy=self.web_proxy,
+        ))
         self.tools.register(WebFetchTool(proxy=self.web_proxy))
         self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
         self.tools.register(SpawnTool(manager=self.subagents))

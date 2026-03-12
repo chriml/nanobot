@@ -376,12 +376,10 @@ def _onboard_plugins(config_path: Path) -> None:
 
 
 def _make_provider(config: Config):
-    """Create the appropriate LLM provider from config.
-
-    Routing is driven by ``ProviderSpec.backend`` in the registry.
-    """
+    """Create the appropriate LLM provider from config."""
+    from nanobot.providers.azure_openai_provider import AzureOpenAIProvider
     from nanobot.providers.base import GenerationSettings
-    from nanobot.providers.registry import find_by_name
+    from nanobot.providers.openai_codex_provider import OpenAICodexProvider
 
     model = config.agents.defaults.model
     provider_name = config.get_provider_name(model)
@@ -541,7 +539,8 @@ def gateway(
         model=config.agents.defaults.model,
         max_iterations=config.agents.defaults.max_tool_iterations,
         context_window_tokens=config.agents.defaults.context_window_tokens,
-        web_search_config=config.tools.web.search,
+        web_search_base_url=config.tools.web.search.base_url or None,
+        web_search_max_results=config.tools.web.search.max_results,
         web_proxy=config.tools.web.proxy or None,
         exec_config=config.tools.exec,
         cron_service=cron,
@@ -747,7 +746,8 @@ def agent(
         model=config.agents.defaults.model,
         max_iterations=config.agents.defaults.max_tool_iterations,
         context_window_tokens=config.agents.defaults.context_window_tokens,
-        web_search_config=config.tools.web.search,
+        web_search_base_url=config.tools.web.search.base_url or None,
+        web_search_max_results=config.tools.web.search.max_results,
         web_proxy=config.tools.web.proxy or None,
         exec_config=config.tools.exec,
         cron_service=cron,

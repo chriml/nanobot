@@ -73,7 +73,7 @@ def _format_results(query: str, items: list[dict[str, Any]], n: int) -> str:
 
 
 class WebSearchTool(Tool):
-    """Search the web using configured provider."""
+    """Search the web using a SearXNG instance."""
 
     name = "web_search"
     description = "Search the web. Returns titles, URLs, and snippets."
@@ -86,48 +86,40 @@ class WebSearchTool(Tool):
         "required": ["query"],
     }
 
-    def __init__(self, config: WebSearchConfig | None = None, proxy: str | None = None):
-        from nanobot.config.schema import WebSearchConfig
-
-        self.config = config if config is not None else WebSearchConfig()
+    def __init__(self, base_url: str | None = None, max_results: int = 5, proxy: str | None = None):
+        self._init_base_url = base_url
+        self.max_results = max_results
         self.proxy = proxy
 
+    @property
+    def base_url(self) -> str:
+        """Resolve base URL at call time so env/config changes are picked up."""
+        return self._init_base_url or os.environ.get("SEARXNG_BASE_URL", "http://localhost:8080")
+
     async def execute(self, query: str, count: int | None = None, **kwargs: Any) -> str:
-        provider = self.config.provider.strip().lower() or "brave"
-        n = min(max(count or self.config.max_results, 1), 10)
-
-        if provider == "duckduckgo":
-            return await self._search_duckduckgo(query, n)
-        elif provider == "tavily":
-            return await self._search_tavily(query, n)
-        elif provider == "searxng":
-            return await self._search_searxng(query, n)
-        elif provider == "jina":
-            return await self._search_jina(query, n)
-        elif provider == "brave":
-            return await self._search_brave(query, n)
-        else:
-            return f"Error: unknown search provider '{provider}'"
-
-    async def _search_brave(self, query: str, n: int) -> str:
-        api_key = self.config.api_key or os.environ.get("BRAVE_API_KEY", "")
-        if not api_key:
-            logger.warning("BRAVE_API_KEY not set, falling back to DuckDuckGo")
-            return await self._search_duckduckgo(query, n)
         try:
             async with httpx.AsyncClient(proxy=self.proxy) as client:
                 r = await client.get(
-                    "https://api.search.brave.com/res/v1/web/search",
-                    params={"q": query, "count": n},
-                    headers={"Accept": "application/json", "X-Subscription-Token": api_key},
+                    f"{self.base_url.rstrip('/')}/search",
+                    params={"q": query, "format": "json"},
+                    headers={"Accept": "application/json"},
                     timeout=10.0,
                 )
                 r.raise_for_status()
-            items = [
-                {"title": x.get("title", ""), "url": x.get("url", ""), "content": x.get("description", "")}
-                for x in r.json().get("web", {}).get("results", [])
-            ]
-            return _format_results(query, items, n)
+
+            results = r.json().get("results", [])[:n]
+            if not results:
+                return f"No results for: {query}"
+
+            lines = [f"Results for: {query}\n"]
+            for i, item in enumerate(results, 1):
+                lines.append(f"{i}. {item.get('title', '')}\n   {item.get('url', '')}")
+                if desc := item.get("content") or item.get("description"):
+                    lines.append(f"   {desc}")
+            return "\n".join(lines)
+        except httpx.ProxyError as e:
+            logger.error("WebSearch proxy error: {}", e)
+            return f"Proxy error: {e}"
         except Exception as e:
             return f"Error: {e}"
 
@@ -234,9 +226,18 @@ class WebFetchTool(Tool):
         self.max_chars = max_chars
         self.proxy = proxy
 
-    async def execute(self, url: str, extractMode: str = "markdown", maxChars: int | None = None, **kwargs: Any) -> Any:
-        max_chars = maxChars or self.max_chars
-        is_valid, error_msg = _validate_url_safe(url)
+    async def execute(
+        self,
+        url: str,
+        extract_mode: str = "markdown",
+        max_chars_override: int | None = None,
+        **kwargs: Any,
+    ) -> str:
+        from readability import Document
+
+        extract_mode = kwargs.get("extractMode", extract_mode)
+        max_chars = kwargs.get("maxChars", max_chars_override) or self.max_chars
+        is_valid, error_msg = _validate_url(url)
         if not is_valid:
             return json.dumps({"error": f"URL validation failed: {error_msg}", "url": url}, ensure_ascii=False)
 
@@ -335,7 +336,6 @@ class WebFetchTool(Tool):
             truncated = len(text) > max_chars
             if truncated:
                 text = text[:max_chars]
-            text = f"{_UNTRUSTED_BANNER}\n\n{text}"
 
             return json.dumps({
                 "url": url, "finalUrl": str(r.url), "status": r.status_code,
