@@ -338,18 +338,38 @@ def _configure_bitwarden_onboarding(config: Config) -> bool:
         hide_input=True,
         show_default=False,
     ).strip()
-    password_file = typer.prompt(
-        "Bitwarden password file (BW_PASSWORD_FILE)",
-        default=existing_env.get("BW_PASSWORD_FILE", ""),
-        show_default=False,
-    ).strip()
+    password_file = str(
+        Path(existing_env.get("BW_PASSWORD_FILE") or Path.home() / ".nanobot" / "bitwarden-password")
+        .expanduser()
+    )
+    password_path = Path(password_file)
+    should_write_password = not password_path.exists()
+    if password_path.exists():
+        should_write_password = typer.confirm(
+            "Update the Bitwarden master password file now?",
+            default=False,
+        )
+    if should_write_password:
+        master_password = typer.prompt(
+            "Bitwarden master password",
+            default="",
+            hide_input=True,
+            show_default=False,
+        ).strip()
+        if not master_password:
+            console.print(
+                "[yellow]Bitwarden setup not saved.[/yellow] "
+                "A master password is required to create the password file."
+            )
+            return False
 
     if client_id:
         env["BW_CLIENTID"] = client_id
     if client_secret:
         env["BW_CLIENTSECRET"] = client_secret
-    if password_file:
-        env["BW_PASSWORD_FILE"] = password_file
+    env["BW_PASSWORD_FILE"] = password_file
+    if should_write_password:
+        _write_secret_file(password_path, master_password)
     if not env.get("BW_CLIENTID") or not env.get("BW_CLIENTSECRET") or not env.get("BW_PASSWORD_FILE"):
         console.print(
             "[yellow]Bitwarden setup not saved.[/yellow] "
@@ -360,6 +380,16 @@ def _configure_bitwarden_onboarding(config: Config) -> bool:
     bitwarden.env = env
     config.tools.mcp_servers["bitwarden"] = bitwarden
     return True
+
+
+def _write_secret_file(path: Path, value: str) -> None:
+    """Write a secret file with owner-only permissions."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"{value}\n", encoding="utf-8")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
 
 
 def _configure_channels_onboarding(config: Config) -> bool:
