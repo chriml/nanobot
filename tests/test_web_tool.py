@@ -3,7 +3,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from nanobot.agent.tools.web import WebSearchTool
+from nanobot.agent.tools.web import DEFAULT_SEARXNG_BASE_URL, WebSearchTool
 
 
 class _FakeResponse:
@@ -82,8 +82,16 @@ async def test_web_search_reports_no_results(monkeypatch: pytest.MonkeyPatch) ->
             return _FakeResponse({"results": []})
 
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: _EmptyClient(**kwargs))
-    tool = WebSearchTool(base_url="http://localhost:8080")
+    tool = WebSearchTool(base_url=DEFAULT_SEARXNG_BASE_URL)
 
     result = await tool.execute("nope")
 
     assert result == "No results for: nope"
+
+
+def test_web_search_defaults_to_docker_searxng_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SEARXNG_BASE_URL", raising=False)
+
+    tool = WebSearchTool()
+
+    assert tool.base_url == DEFAULT_SEARXNG_BASE_URL
