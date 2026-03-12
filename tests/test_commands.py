@@ -7,6 +7,7 @@ import pytest
 from typer.testing import CliRunner
 
 from nanobot.cli.commands import app
+from nanobot.cli.commands import _strip_terminal_escapes
 from nanobot.config.schema import Config
 from nanobot.providers.litellm_provider import LiteLLMProvider
 from nanobot.providers.openai_codex_provider import _strip_model_prefix
@@ -295,6 +296,10 @@ def test_onboard_can_configure_telegram_channel(tmp_path, monkeypatch):
     assert telegram["allowFrom"] == ["*"]
     assert telegram["groupPolicy"] == "mention"
     assert telegram["replyToMessage"] is False
+
+
+def test_strip_terminal_escapes_removes_ansi_sequences():
+    assert _strip_terminal_escapes("\x1b[O\x1b[Isecret-value") == "secret-value"
 
 
 def test_config_matches_github_copilot_codex_with_hyphen_prefix():
