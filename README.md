@@ -1346,6 +1346,8 @@ This is the permanent-access setup. `nanobot bitwarden-mcp` will use `BW_CLIENTI
 
 All three values are required for the permanent-access flow.
 
+During `nanobot onboard`, nanobot uses the configured Bitwarden password file path if one already exists; otherwise it writes `~/.nanobot/bitwarden-password` for you after prompting once for the Bitwarden master password. Only the file path is stored in config.
+
 If you prefer not to store those values in `config.json`, set them in the environment before starting nanobot:
 
 ```bash
