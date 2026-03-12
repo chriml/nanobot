@@ -999,6 +999,7 @@ For Bitwarden, onboarding can generate the MCP block for you, or you can add it 
         "command": "nanobot",
         "args": ["bitwarden-mcp"],
         "env": {
+          "BW_SERVER_URL": "https://vault.bitwarden.com",
           "BW_CLIENTID": "your-personal-api-key-client-id",
           "BW_CLIENTSECRET": "your-personal-api-key-client-secret",
           "BW_PASSWORD_FILE": "/path/to/bitwarden-password"
@@ -1010,9 +1011,9 @@ For Bitwarden, onboarding can generate the MCP block for you, or you can add it 
 }
 ```
 
-This is the permanent-access setup. `nanobot bitwarden-mcp` will use `BW_CLIENTID` / `BW_CLIENTSECRET` plus `BW_PASSWORD_FILE` to log in, unlock the vault, refresh `BW_SESSION`, and then launch the official Bitwarden MCP server.
+This is the permanent-access setup. `nanobot bitwarden-mcp` will use `BW_SERVER_URL`, `BW_CLIENTID`, `BW_CLIENTSECRET`, and `BW_PASSWORD_FILE` to set the Bitwarden server, log in, unlock the vault, refresh `BW_SESSION`, and then launch the official Bitwarden MCP server.
 
-All three values are required for the permanent-access flow.
+All four values are required for the permanent-access flow.
 
 During `nanobot onboard`, nanobot uses the configured Bitwarden password file path if one already exists; otherwise it writes `~/.nanobot/bitwarden-password` for you after prompting once for the Bitwarden master password. Only the file path is stored in config.
 
@@ -1022,6 +1023,7 @@ If you prefer not to store those values in `config.json`, set them in the enviro
 export BW_CLIENTID="your-personal-api-key-client-id"
 export BW_CLIENTSECRET="your-personal-api-key-client-secret"
 export BW_PASSWORD_FILE="$HOME/.config/nanobot/bitwarden-password"
+export BW_SERVER_URL="https://vault.bitwarden.com"
 ```
 
 Two transport modes are supported:

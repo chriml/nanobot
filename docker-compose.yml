@@ -8,6 +8,7 @@ x-common-config: &common-config
     - searxng
   environment:
     SEARXNG_BASE_URL: http://searxng:8080
+    BW_SERVER_URL: ${BW_SERVER_URL:-}
     BW_CLIENTID: ${BW_CLIENTID:-}
     BW_CLIENTSECRET: ${BW_CLIENTSECRET:-}
     BW_PASSWORD_FILE: ${BW_PASSWORD_FILE:-}
