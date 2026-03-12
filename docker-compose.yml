@@ -4,8 +4,28 @@ x-common-config: &common-config
     dockerfile: Dockerfile
   volumes:
     - ~/.nanobot:/root/.nanobot
+  depends_on:
+    - searxng
+  environment:
+    SEARXNG_BASE_URL: http://searxng:8080
 
 services:
+  searxng:
+    container_name: nanobot-searxng
+    image: docker.io/searxng/searxng:latest
+    restart: unless-stopped
+    ports:
+      - 8080:8080
+    volumes:
+      - ./docker/searxng/settings.yml:/etc/searxng/settings.yml:ro
+    depends_on:
+      - searxng-redis
+
+  searxng-redis:
+    container_name: nanobot-searxng-redis
+    image: docker.io/valkey/valkey:8-alpine
+    restart: unless-stopped
+
   nanobot-gateway:
     container_name: nanobot-gateway
     <<: *common-config

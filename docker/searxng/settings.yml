@@ -1,0 +1,15 @@
+use_default_settings: true
+
+general:
+  instance_name: "nanobot searxng"
+
+search:
+  formats:
+    - html
+    - json
+
+server:
+  secret_key: "nanobot-searxng-change-me"
+
+redis:
+  url: redis://searxng-redis:6379/0

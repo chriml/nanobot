@@ -9,7 +9,7 @@ import re
 import sys
 from contextlib import AsyncExitStack
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Awaitable, Callable
 
 from loguru import logger
 
@@ -55,7 +55,8 @@ class AgentLoop:
         model: str | None = None,
         max_iterations: int = 40,
         context_window_tokens: int = 65_536,
-        brave_api_key: str | None = None,
+        web_search_base_url: str | None = None,
+        web_search_max_results: int = 5,
         web_proxy: str | None = None,
         exec_config: ExecToolConfig | None = None,
         cron_service: CronService | None = None,
@@ -72,7 +73,8 @@ class AgentLoop:
         self.model = model or provider.get_default_model()
         self.max_iterations = max_iterations
         self.context_window_tokens = context_window_tokens
-        self.brave_api_key = brave_api_key
+        self.web_search_base_url = web_search_base_url
+        self.web_search_max_results = web_search_max_results
         self.web_proxy = web_proxy
         self.exec_config = exec_config or ExecToolConfig()
         self.cron_service = cron_service
@@ -86,7 +88,8 @@ class AgentLoop:
             workspace=workspace,
             bus=bus,
             model=self.model,
-            brave_api_key=brave_api_key,
+            web_search_base_url=web_search_base_url,
+            web_search_max_results=web_search_max_results,
             web_proxy=web_proxy,
             exec_config=self.exec_config,
             restrict_to_workspace=restrict_to_workspace,
@@ -121,7 +124,11 @@ class AgentLoop:
             restrict_to_workspace=self.restrict_to_workspace,
             path_append=self.exec_config.path_append,
         ))
-        self.tools.register(WebSearchTool(api_key=self.brave_api_key, proxy=self.web_proxy))
+        self.tools.register(WebSearchTool(
+            base_url=self.web_search_base_url,
+            max_results=self.web_search_max_results,
+            proxy=self.web_proxy,
+        ))
         self.tools.register(WebFetchTool(proxy=self.web_proxy))
         self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
         self.tools.register(SpawnTool(manager=self.subagents))
