@@ -49,7 +49,8 @@ def test_onboard_fresh_install(mock_paths):
     """No existing config — should create from scratch."""
     config_file, workspace_dir = mock_paths
 
-    result = runner.invoke(app, ["onboard"])
+    with patch("nanobot.cli.commands._get_openai_codex_account_id", return_value=None):
+        result = runner.invoke(app, ["onboard"])
 
     assert result.exit_code == 0
     assert "Created config" in result.stdout
@@ -111,6 +112,7 @@ def test_onboard_noninteractive_skips_bitwarden_prompt(tmp_path, monkeypatch):
     monkeypatch.setattr("nanobot.config.loader.get_config_path", lambda: config_path)
     monkeypatch.setattr("nanobot.cli.commands.get_workspace_path", lambda: workspace)
     monkeypatch.setattr("nanobot.cli.commands._supports_interactive_onboarding", lambda: False)
+    monkeypatch.setattr("nanobot.cli.commands._get_openai_codex_account_id", lambda: None)
 
     result = runner.invoke(app, ["onboard"])
 
@@ -130,7 +132,9 @@ def test_onboard_interactive_runs_openai_codex_login(tmp_path, monkeypatch):
     monkeypatch.setattr("nanobot.config.loader.get_config_path", lambda: config_path)
     monkeypatch.setattr("nanobot.cli.commands.get_workspace_path", lambda: workspace)
     monkeypatch.setattr("nanobot.cli.commands._supports_interactive_onboarding", lambda: True)
+    monkeypatch.setattr("nanobot.cli.commands._get_openai_codex_account_id", lambda: None)
     monkeypatch.setattr("nanobot.cli.commands._configure_bitwarden_onboarding", lambda _config: False)
+    monkeypatch.setattr("nanobot.cli.commands._configure_channels_onboarding", lambda _config: False)
     monkeypatch.setattr(
         "nanobot.cli.commands._login_openai_codex",
         lambda: called.__setitem__("login", True),
@@ -146,6 +150,55 @@ def test_onboard_interactive_runs_openai_codex_login(tmp_path, monkeypatch):
     assert "  1. Chat:" in result.stdout
 
 
+def test_onboard_interactive_can_skip_openai_codex_update_when_already_configured(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    workspace = tmp_path / "workspace"
+    called: dict[str, bool] = {"login": False}
+
+    monkeypatch.setattr("nanobot.config.loader.get_config_path", lambda: config_path)
+    monkeypatch.setattr("nanobot.cli.commands.get_workspace_path", lambda: workspace)
+    monkeypatch.setattr("nanobot.cli.commands._supports_interactive_onboarding", lambda: True)
+    monkeypatch.setattr("nanobot.cli.commands._get_openai_codex_account_id", lambda: "acct-123")
+    monkeypatch.setattr("nanobot.cli.commands._configure_bitwarden_onboarding", lambda _config: False)
+    monkeypatch.setattr("nanobot.cli.commands._configure_channels_onboarding", lambda _config: False)
+    monkeypatch.setattr(
+        "nanobot.cli.commands._login_openai_codex",
+        lambda: called.__setitem__("login", True),
+    )
+
+    result = runner.invoke(app, ["onboard"], input="n\n")
+
+    assert result.exit_code == 0
+    assert called["login"] is False
+    assert "OpenAI Codex is already configured." in result.stdout
+    assert "Update OpenAI Codex access?" in result.stdout
+    assert "  1. Chat:" in result.stdout
+
+
+def test_onboard_interactive_can_update_openai_codex_when_already_configured(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    workspace = tmp_path / "workspace"
+    called: dict[str, bool] = {"login": False}
+
+    monkeypatch.setattr("nanobot.config.loader.get_config_path", lambda: config_path)
+    monkeypatch.setattr("nanobot.cli.commands.get_workspace_path", lambda: workspace)
+    monkeypatch.setattr("nanobot.cli.commands._supports_interactive_onboarding", lambda: True)
+    monkeypatch.setattr("nanobot.cli.commands._get_openai_codex_account_id", lambda: "acct-123")
+    monkeypatch.setattr("nanobot.cli.commands._configure_bitwarden_onboarding", lambda _config: False)
+    monkeypatch.setattr("nanobot.cli.commands._configure_channels_onboarding", lambda _config: False)
+    monkeypatch.setattr(
+        "nanobot.cli.commands._login_openai_codex",
+        lambda: called.__setitem__("login", True),
+    )
+
+    result = runner.invoke(app, ["onboard"], input="y\n")
+
+    assert result.exit_code == 0
+    assert called["login"] is True
+    assert "OpenAI Codex is already configured." in result.stdout
+    assert "Update OpenAI Codex access?" in result.stdout
+
+
 def test_onboard_can_configure_bitwarden_mcp(tmp_path, monkeypatch):
     config_path = tmp_path / "config.json"
     workspace = tmp_path / "workspace"
@@ -153,7 +206,9 @@ def test_onboard_can_configure_bitwarden_mcp(tmp_path, monkeypatch):
     monkeypatch.setattr("nanobot.config.loader.get_config_path", lambda: config_path)
     monkeypatch.setattr("nanobot.cli.commands.get_workspace_path", lambda: workspace)
     monkeypatch.setattr("nanobot.cli.commands._supports_interactive_onboarding", lambda: True)
+    monkeypatch.setattr("nanobot.cli.commands._get_openai_codex_account_id", lambda: None)
     monkeypatch.setattr("nanobot.cli.commands._login_openai_codex", lambda: None)
+    monkeypatch.setattr("nanobot.cli.commands._configure_channels_onboarding", lambda _config: False)
 
     result = runner.invoke(
         app,
@@ -184,7 +239,9 @@ def test_onboard_does_not_save_incomplete_bitwarden_config(tmp_path, monkeypatch
     monkeypatch.setattr("nanobot.config.loader.get_config_path", lambda: config_path)
     monkeypatch.setattr("nanobot.cli.commands.get_workspace_path", lambda: workspace)
     monkeypatch.setattr("nanobot.cli.commands._supports_interactive_onboarding", lambda: True)
+    monkeypatch.setattr("nanobot.cli.commands._get_openai_codex_account_id", lambda: None)
     monkeypatch.setattr("nanobot.cli.commands._login_openai_codex", lambda: None)
+    monkeypatch.setattr("nanobot.cli.commands._configure_channels_onboarding", lambda _config: False)
 
     result = runner.invoke(
         app,
@@ -197,6 +254,41 @@ def test_onboard_does_not_save_incomplete_bitwarden_config(tmp_path, monkeypatch
 
     saved = json.loads(config_path.read_text(encoding="utf-8"))
     assert saved["tools"]["mcpServers"] == {}
+
+
+def test_onboard_can_configure_telegram_channel(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    workspace = tmp_path / "workspace"
+
+    monkeypatch.setattr("nanobot.config.loader.get_config_path", lambda: config_path)
+    monkeypatch.setattr("nanobot.cli.commands.get_workspace_path", lambda: workspace)
+    monkeypatch.setattr("nanobot.cli.commands._supports_interactive_onboarding", lambda: True)
+    monkeypatch.setattr("nanobot.cli.commands._run_openai_codex_onboarding_login", lambda: False)
+    monkeypatch.setattr("nanobot.cli.commands._configure_bitwarden_onboarding", lambda _config: False)
+
+    class _TelegramChannel:
+        display_name = "Telegram"
+
+    monkeypatch.setattr("nanobot.channels.registry.discover_channel_names", lambda: ["telegram"])
+    monkeypatch.setattr("nanobot.channels.registry.load_channel_class", lambda _name: _TelegramChannel)
+
+    result = runner.invoke(
+        app,
+        ["onboard"],
+        input="y\n1\ntelegram-token\n*\nmention\nn\nn\n",
+    )
+
+    assert result.exit_code == 0
+    assert "Channel configuration saved to your config" in result.stdout
+
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    telegram = saved["channels"]["telegram"]
+
+    assert telegram["enabled"] is True
+    assert telegram["token"] == "telegram-token"
+    assert telegram["allowFrom"] == ["*"]
+    assert telegram["groupPolicy"] == "mention"
+    assert telegram["replyToMessage"] is False
 
 
 def test_config_matches_github_copilot_codex_with_hyphen_prefix():

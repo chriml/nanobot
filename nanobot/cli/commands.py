@@ -5,6 +5,7 @@ import os
 import select
 import signal
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 # Force UTF-8 encoding for Windows console
@@ -199,6 +200,10 @@ def onboard():
         save_config(config)
         console.print("[green]✓[/green] Bitwarden MCP access saved to your config")
 
+    if _configure_channels_onboarding(config):
+        save_config(config)
+        console.print("[green]✓[/green] Channel configuration saved to your config")
+
     # Create workspace
     workspace = get_workspace_path()
 
@@ -232,16 +237,42 @@ def _supports_interactive_onboarding() -> bool:
 
 def _run_openai_codex_onboarding_login() -> bool:
     """Authenticate with OpenAI Codex during interactive onboarding."""
-    if not _supports_interactive_onboarding():
-        console.print(
-            "[dim]OpenAI Codex login skipped because onboarding is running non-interactively. "
-            "Run `nanobot provider login openai-codex` later if needed.[/dim]"
-        )
-        return False
+    account_id = _get_openai_codex_account_id()
+    if account_id:
+        console.print(f"[dim]OpenAI Codex is already configured.[/dim] [dim]{account_id}[/dim]")
+        if not _supports_interactive_onboarding():
+            return True
+        if not typer.confirm("Update OpenAI Codex access?", default=False):
+            return True
+    else:
+        if not _supports_interactive_onboarding():
+            console.print(
+                "[dim]OpenAI Codex login skipped because onboarding is running non-interactively. "
+                "Run `nanobot provider login openai-codex` later if needed.[/dim]"
+            )
+            return False
+        console.print("\n[bold]Default:[/bold] sign in to OpenAI Codex for the default provider.")
 
-    console.print("\n[bold]Default:[/bold] sign in to OpenAI Codex for the default provider.")
     _login_openai_codex()
     return True
+
+
+def _get_openai_codex_account_id() -> str | None:
+    """Return the current OpenAI Codex account id when OAuth is already configured."""
+    try:
+        from oauth_cli_kit import get_token
+    except ImportError:
+        return None
+
+    try:
+        token = get_token()
+    except Exception:
+        return None
+
+    if token and getattr(token, "access", None):
+        account_id = getattr(token, "account_id", None)
+        return account_id if isinstance(account_id, str) and account_id else "configured"
+    return None
 
 
 def _configure_bitwarden_onboarding(config: Config) -> bool:
@@ -329,6 +360,417 @@ def _configure_bitwarden_onboarding(config: Config) -> bool:
     bitwarden.env = env
     config.tools.mcp_servers["bitwarden"] = bitwarden
     return True
+
+
+def _configure_channels_onboarding(config: Config) -> bool:
+    """Optionally configure one or more chat channels during onboarding."""
+    from nanobot.channels.registry import discover_channel_names, load_channel_class
+
+    if not _supports_interactive_onboarding():
+        console.print(
+            "[dim]Channel setup skipped because onboarding is running non-interactively. "
+            "You can configure channels later in ~/.nanobot/config.json.[/dim]"
+        )
+        return False
+
+    console.print("\n[bold]Optional:[/bold] configure chat channels for nanobot.")
+    if not typer.confirm("Configure a channel now?", default=False):
+        return False
+
+    channel_names = discover_channel_names()
+    options: list[tuple[str, str]] = []
+    for name in channel_names:
+        try:
+            options.append((name, load_channel_class(name).display_name))
+        except ImportError:
+            options.append((name, name.title()))
+    options.sort(key=lambda item: item[1].lower())
+
+    changed = False
+    while True:
+        console.print("\nAvailable channels:")
+        for idx, (_, display_name) in enumerate(options, start=1):
+            console.print(f"  {idx}. {display_name}")
+
+        raw_choice = typer.prompt(
+            "Select a channel number (press Enter to finish)",
+            default="",
+            show_default=False,
+        ).strip()
+        if not raw_choice:
+            break
+        if not raw_choice.isdigit():
+            console.print("[yellow]Invalid selection. Enter a channel number.[/yellow]")
+            continue
+
+        choice = int(raw_choice)
+        if choice < 1 or choice > len(options):
+            console.print("[yellow]Invalid selection. Choose one of the listed channels.[/yellow]")
+            continue
+
+        channel_name, display_name = options[choice - 1]
+        if _configure_single_channel(config, channel_name, display_name):
+            changed = True
+
+        if not typer.confirm("Configure another channel?", default=False):
+            break
+
+    return changed
+
+
+def _configure_single_channel(config: Config, channel_name: str, display_name: str) -> bool:
+    """Configure a single channel section in config."""
+    section = getattr(config.channels, channel_name)
+    values = section.model_dump()
+    is_configured = _channel_has_non_default_values(channel_name, section)
+
+    console.print(f"\n[bold]{display_name}[/bold]")
+    if is_configured:
+        console.print(f"[dim]{display_name} is already configured.[/dim]")
+        if not typer.confirm(f"Update {display_name} settings?", default=False):
+            return False
+
+    handler = _CHANNEL_ONBOARDING_HANDLERS.get(channel_name)
+    if handler is None:
+        console.print(
+            f"[yellow]{display_name} setup is not available in onboarding yet.[/yellow] "
+            "Edit ~/.nanobot/config.json manually."
+        )
+        return False
+
+    updated = handler(values)
+    if updated is None:
+        return False
+
+    updated["enabled"] = True
+    setattr(config.channels, channel_name, type(section).model_validate(updated))
+    return True
+
+
+def _channel_has_non_default_values(channel_name: str, section: object) -> bool:
+    """Return True when a channel section already contains meaningful config."""
+    values = section.model_dump()
+    if values.get("enabled"):
+        return True
+    keys = _CHANNEL_EXISTENCE_KEYS.get(channel_name, ())
+    return any(bool(values.get(key)) for key in keys)
+
+
+def _prompt_text(
+    prompt: str,
+    current: str = "",
+    *,
+    secret: bool = False,
+) -> str:
+    """Prompt for a string value, preserving the current one on blank input."""
+    return typer.prompt(
+        prompt,
+        default=current,
+        hide_input=secret,
+        show_default=False,
+    ).strip()
+
+
+def _prompt_int(prompt: str, current: int) -> int:
+    """Prompt for an integer value."""
+    while True:
+        raw_value = typer.prompt(prompt, default=str(current), show_default=False).strip()
+        try:
+            return int(raw_value)
+        except ValueError:
+            console.print("[yellow]Please enter a whole number.[/yellow]")
+
+
+def _prompt_list(prompt: str, current: list[str]) -> list[str]:
+    """Prompt for a comma-separated string list."""
+    raw_value = typer.prompt(
+        prompt,
+        default=", ".join(current),
+        show_default=False,
+    ).strip()
+    if not raw_value:
+        return []
+    return [item.strip() for item in raw_value.split(",") if item.strip()]
+
+
+def _prompt_choice(prompt: str, current: str, choices: tuple[str, ...]) -> str:
+    """Prompt for one of a fixed set of values."""
+    choice_text = "/".join(choices)
+    while True:
+        value = typer.prompt(
+            f"{prompt} ({choice_text})",
+            default=current,
+            show_default=False,
+        ).strip()
+        if value in choices:
+            return value
+        console.print(f"[yellow]Choose one of: {choice_text}[/yellow]")
+
+
+def _require_channel_fields(values: dict[str, object], display_name: str, fields: tuple[str, ...]) -> bool:
+    """Return True when all required fields are present, else print a warning."""
+    missing = [field for field in fields if not values.get(field)]
+    if not missing:
+        return True
+    console.print(
+        f"[yellow]{display_name} setup not saved.[/yellow] "
+        f"Required: {', '.join(missing)}."
+    )
+    return False
+
+
+def _configure_telegram_channel(values: dict[str, object]) -> dict[str, object] | None:
+    values["token"] = _prompt_text("Telegram bot token", str(values.get("token", "")), secret=True)
+    values["allow_from"] = _prompt_list(
+        "Allowed Telegram users (comma-separated, use * to allow all)",
+        list(values.get("allow_from", [])),
+    )
+    values["group_policy"] = _prompt_choice(
+        "Group policy",
+        str(values.get("group_policy", "mention")),
+        ("mention", "open"),
+    )
+    values["reply_to_message"] = typer.confirm(
+        "Reply to the original message?",
+        default=bool(values.get("reply_to_message", False)),
+    )
+    return values if _require_channel_fields(values, "Telegram", ("token",)) else None
+
+
+def _configure_discord_channel(values: dict[str, object]) -> dict[str, object] | None:
+    values["token"] = _prompt_text("Discord bot token", str(values.get("token", "")), secret=True)
+    values["allow_from"] = _prompt_list(
+        "Allowed Discord users (comma-separated, use * to allow all)",
+        list(values.get("allow_from", [])),
+    )
+    values["group_policy"] = _prompt_choice(
+        "Group policy",
+        str(values.get("group_policy", "mention")),
+        ("mention", "open"),
+    )
+    return values if _require_channel_fields(values, "Discord", ("token",)) else None
+
+
+def _configure_whatsapp_channel(values: dict[str, object]) -> dict[str, object] | None:
+    values["bridge_token"] = _prompt_text(
+        "WhatsApp bridge token (optional)",
+        str(values.get("bridge_token", "")),
+        secret=True,
+    )
+    values["allow_from"] = _prompt_list(
+        "Allowed WhatsApp numbers (comma-separated, use * to allow all)",
+        list(values.get("allow_from", [])),
+    )
+    console.print("[dim]Run `nanobot channels login` after onboarding to pair WhatsApp with a QR code.[/dim]")
+    return values
+
+
+def _configure_feishu_channel(values: dict[str, object]) -> dict[str, object] | None:
+    values["app_id"] = _prompt_text("Feishu app ID", str(values.get("app_id", "")))
+    values["app_secret"] = _prompt_text(
+        "Feishu app secret",
+        str(values.get("app_secret", "")),
+        secret=True,
+    )
+    values["verification_token"] = _prompt_text(
+        "Feishu verification token (optional)",
+        str(values.get("verification_token", "")),
+    )
+    values["encrypt_key"] = _prompt_text(
+        "Feishu encrypt key (optional)",
+        str(values.get("encrypt_key", "")),
+        secret=True,
+    )
+    values["allow_from"] = _prompt_list(
+        "Allowed Feishu users (comma-separated, use * to allow all)",
+        list(values.get("allow_from", [])),
+    )
+    values["group_policy"] = _prompt_choice(
+        "Group policy",
+        str(values.get("group_policy", "mention")),
+        ("mention", "open"),
+    )
+    return values if _require_channel_fields(values, "Feishu", ("app_id", "app_secret")) else None
+
+
+def _configure_dingtalk_channel(values: dict[str, object]) -> dict[str, object] | None:
+    values["client_id"] = _prompt_text("DingTalk client ID", str(values.get("client_id", "")))
+    values["client_secret"] = _prompt_text(
+        "DingTalk client secret",
+        str(values.get("client_secret", "")),
+        secret=True,
+    )
+    values["allow_from"] = _prompt_list(
+        "Allowed DingTalk users (comma-separated, use * to allow all)",
+        list(values.get("allow_from", [])),
+    )
+    return values if _require_channel_fields(values, "DingTalk", ("client_id", "client_secret")) else None
+
+
+def _configure_email_channel(values: dict[str, object]) -> dict[str, object] | None:
+    values["consent_granted"] = typer.confirm(
+        "Confirm you own and want nanobot to access this mailbox?",
+        default=bool(values.get("consent_granted", False)),
+    )
+    values["imap_host"] = _prompt_text("IMAP host", str(values.get("imap_host", "")))
+    values["imap_port"] = _prompt_int("IMAP port", int(values.get("imap_port", 993)))
+    values["imap_username"] = _prompt_text("IMAP username", str(values.get("imap_username", "")))
+    values["imap_password"] = _prompt_text(
+        "IMAP password",
+        str(values.get("imap_password", "")),
+        secret=True,
+    )
+    values["smtp_host"] = _prompt_text("SMTP host", str(values.get("smtp_host", "")))
+    values["smtp_port"] = _prompt_int("SMTP port", int(values.get("smtp_port", 587)))
+    values["smtp_username"] = _prompt_text("SMTP username", str(values.get("smtp_username", "")))
+    values["smtp_password"] = _prompt_text(
+        "SMTP password",
+        str(values.get("smtp_password", "")),
+        secret=True,
+    )
+    values["from_address"] = _prompt_text("From address", str(values.get("from_address", "")))
+    values["allow_from"] = _prompt_list(
+        "Allowed sender addresses (comma-separated, use * to allow all)",
+        list(values.get("allow_from", [])),
+    )
+    values["auto_reply_enabled"] = typer.confirm(
+        "Enable automatic email replies?",
+        default=bool(values.get("auto_reply_enabled", True)),
+    )
+    required = (
+        "consent_granted",
+        "imap_host",
+        "imap_username",
+        "imap_password",
+        "smtp_host",
+        "smtp_username",
+        "smtp_password",
+        "from_address",
+    )
+    if not values.get("consent_granted"):
+        console.print("[yellow]Email setup not saved.[/yellow] Consent is required.")
+        return None
+    return values if _require_channel_fields(values, "Email", required[1:]) else None
+
+
+def _configure_mochat_channel(values: dict[str, object]) -> dict[str, object] | None:
+    values["claw_token"] = _prompt_text("Mochat Claw token", str(values.get("claw_token", "")), secret=True)
+    values["agent_user_id"] = _prompt_text(
+        "Mochat agent user ID (optional)",
+        str(values.get("agent_user_id", "")),
+    )
+    values["sessions"] = _prompt_list(
+        "Mochat session IDs (comma-separated, leave blank to auto-discover)",
+        list(values.get("sessions", [])),
+    )
+    values["panels"] = _prompt_list(
+        "Mochat panel IDs (comma-separated, leave blank to auto-discover)",
+        list(values.get("panels", [])),
+    )
+    values["allow_from"] = _prompt_list(
+        "Allowed Mochat senders (comma-separated, use * to allow all)",
+        list(values.get("allow_from", [])),
+    )
+    return values if _require_channel_fields(values, "Mochat", ("claw_token",)) else None
+
+
+def _configure_slack_channel(values: dict[str, object]) -> dict[str, object] | None:
+    values["bot_token"] = _prompt_text("Slack bot token", str(values.get("bot_token", "")), secret=True)
+    values["app_token"] = _prompt_text("Slack app token", str(values.get("app_token", "")), secret=True)
+    values["allow_from"] = _prompt_list(
+        "Allowed Slack users (comma-separated, use * to allow all)",
+        list(values.get("allow_from", [])),
+    )
+    values["group_policy"] = _prompt_choice(
+        "Group policy",
+        str(values.get("group_policy", "mention")),
+        ("mention", "open", "allowlist"),
+    )
+    if values["group_policy"] == "allowlist":
+        values["group_allow_from"] = _prompt_list(
+            "Allowed Slack channels (comma-separated)",
+            list(values.get("group_allow_from", [])),
+        )
+    return values if _require_channel_fields(values, "Slack", ("bot_token", "app_token")) else None
+
+
+def _configure_qq_channel(values: dict[str, object]) -> dict[str, object] | None:
+    values["app_id"] = _prompt_text("QQ app ID", str(values.get("app_id", "")))
+    values["secret"] = _prompt_text("QQ secret", str(values.get("secret", "")), secret=True)
+    values["allow_from"] = _prompt_list(
+        "Allowed QQ users (comma-separated, use * to allow all)",
+        list(values.get("allow_from", [])),
+    )
+    return values if _require_channel_fields(values, "QQ", ("app_id", "secret")) else None
+
+
+def _configure_matrix_channel(values: dict[str, object]) -> dict[str, object] | None:
+    values["homeserver"] = _prompt_text("Matrix homeserver", str(values.get("homeserver", "https://matrix.org")))
+    values["access_token"] = _prompt_text(
+        "Matrix access token",
+        str(values.get("access_token", "")),
+        secret=True,
+    )
+    values["user_id"] = _prompt_text("Matrix user ID", str(values.get("user_id", "")))
+    values["device_id"] = _prompt_text("Matrix device ID (optional)", str(values.get("device_id", "")))
+    values["allow_from"] = _prompt_list(
+        "Allowed Matrix users (comma-separated, use * to allow all)",
+        list(values.get("allow_from", [])),
+    )
+    values["group_policy"] = _prompt_choice(
+        "Group policy",
+        str(values.get("group_policy", "open")),
+        ("open", "mention", "allowlist"),
+    )
+    if values["group_policy"] == "allowlist":
+        values["group_allow_from"] = _prompt_list(
+            "Allowed Matrix rooms (comma-separated)",
+            list(values.get("group_allow_from", [])),
+        )
+    return values if _require_channel_fields(values, "Matrix", ("homeserver", "access_token", "user_id")) else None
+
+
+def _configure_wecom_channel(values: dict[str, object]) -> dict[str, object] | None:
+    values["bot_id"] = _prompt_text("WeCom bot ID", str(values.get("bot_id", "")))
+    values["secret"] = _prompt_text("WeCom bot secret", str(values.get("secret", "")), secret=True)
+    values["allow_from"] = _prompt_list(
+        "Allowed WeCom users (comma-separated, use * to allow all)",
+        list(values.get("allow_from", [])),
+    )
+    values["welcome_message"] = _prompt_text(
+        "WeCom welcome message (optional)",
+        str(values.get("welcome_message", "")),
+    )
+    return values if _require_channel_fields(values, "WeCom", ("bot_id", "secret")) else None
+
+
+_CHANNEL_EXISTENCE_KEYS: dict[str, tuple[str, ...]] = {
+    "whatsapp": ("bridge_token",),
+    "telegram": ("token",),
+    "discord": ("token",),
+    "feishu": ("app_id", "app_secret"),
+    "mochat": ("claw_token",),
+    "dingtalk": ("client_id", "client_secret"),
+    "email": ("imap_host", "imap_username", "smtp_host", "smtp_username"),
+    "slack": ("bot_token", "app_token"),
+    "qq": ("app_id", "secret"),
+    "matrix": ("access_token", "user_id"),
+    "wecom": ("bot_id", "secret"),
+}
+
+_CHANNEL_ONBOARDING_HANDLERS: dict[str, Callable[[dict[str, object]], dict[str, object] | None]] = {
+    "whatsapp": _configure_whatsapp_channel,
+    "telegram": _configure_telegram_channel,
+    "discord": _configure_discord_channel,
+    "feishu": _configure_feishu_channel,
+    "mochat": _configure_mochat_channel,
+    "dingtalk": _configure_dingtalk_channel,
+    "email": _configure_email_channel,
+    "slack": _configure_slack_channel,
+    "qq": _configure_qq_channel,
+    "matrix": _configure_matrix_channel,
+    "wecom": _configure_wecom_channel,
+}
 
 
 @app.command("bitwarden-mcp", hidden=True)

@@ -177,7 +177,7 @@ nanobot channels login
 nanobot onboard
 ```
 
-`nanobot onboard` can also scaffold optional Bitwarden MCP access during setup. Skip it if you do not use Bitwarden yet.
+`nanobot onboard` can also guide OpenAI Codex login, optional Bitwarden MCP setup, and optional channel configuration during setup.
 
 **2. Configure** (`~/.nanobot/config.json`)
 
