@@ -4,6 +4,7 @@ import asyncio
 from contextlib import contextmanager, nullcontext
 
 import os
+import re
 import select
 import signal
 import sys
@@ -428,17 +429,17 @@ def _configure_bitwarden_onboarding(config: Config) -> bool:
         }
     }
 
-    client_id = typer.prompt(
+    client_id = _strip_terminal_escapes(typer.prompt(
         "Bitwarden CLI client ID (BW_CLIENTID)",
         default=existing_env.get("BW_CLIENTID", ""),
         show_default=False,
-    ).strip()
-    client_secret = typer.prompt(
+    ).strip())
+    client_secret = _strip_terminal_escapes(typer.prompt(
         "Bitwarden CLI client secret (BW_CLIENTSECRET)",
         default=existing_env.get("BW_CLIENTSECRET", ""),
         hide_input=True,
         show_default=False,
-    ).strip()
+    ).strip())
     password_file = str(
         Path(existing_env.get("BW_PASSWORD_FILE") or Path.home() / ".nanobot" / "bitwarden-password")
         .expanduser()
@@ -451,12 +452,12 @@ def _configure_bitwarden_onboarding(config: Config) -> bool:
             default=False,
         )
     if should_write_password:
-        master_password = typer.prompt(
+        master_password = _strip_terminal_escapes(typer.prompt(
             "Bitwarden master password",
             default="",
             hide_input=True,
             show_default=False,
-        ).strip()
+        ).strip())
         if not master_password:
             console.print(
                 "[yellow]Bitwarden setup not saved.[/yellow] "
@@ -491,6 +492,14 @@ def _write_secret_file(path: Path, value: str) -> None:
         path.chmod(0o600)
     except OSError:
         pass
+
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])")
+
+
+def _strip_terminal_escapes(value: str) -> str:
+    """Remove terminal escape sequences accidentally captured during paste."""
+    return _ANSI_ESCAPE_RE.sub("", value)
 
 
 def _configure_channels_onboarding(config: Config) -> bool:
