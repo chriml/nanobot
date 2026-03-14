@@ -34,8 +34,6 @@ class ChannelManager:
         """Initialize channels discovered via pkgutil scan."""
         from nanobot.channels.registry import discover_channel_names, load_channel_class
 
-        groq_key = self.config.providers.groq.api_key
-
         for modname in discover_channel_names():
             section = getattr(self.config.channels, modname, None)
             if not section or not getattr(section, "enabled", False):
@@ -43,7 +41,6 @@ class ChannelManager:
             try:
                 cls = load_channel_class(modname)
                 channel = cls(section, self.bus)
-                channel.transcription_api_key = groq_key
                 self.channels[modname] = channel
                 logger.info("{} channel enabled", cls.display_name)
             except ImportError as e:

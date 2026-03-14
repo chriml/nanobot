@@ -4,6 +4,7 @@ x-common-config: &common-config
     dockerfile: Dockerfile
   volumes:
     - ~/.nanobot:/root/.nanobot
+    - ~/.cache/whisper:/root/.cache/whisper
   depends_on:
     - searxng
   environment:
@@ -12,6 +13,7 @@ x-common-config: &common-config
     BW_CLIENTID: ${BW_CLIENTID:-}
     BW_CLIENTSECRET: ${BW_CLIENTSECRET:-}
     BW_PASSWORD_FILE: ${BW_PASSWORD_FILE:-}
+    NANOBOT_TRANSCRIBE_MODEL: ${NANOBOT_TRANSCRIBE_MODEL:-base}
 
 services:
   searxng:
