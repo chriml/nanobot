@@ -1,8 +1,9 @@
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
-# Install Node.js 22 for the WhatsApp bridge and Bitwarden MCP prerequisites
+# Install Node.js 22 for the WhatsApp bridge and Bitwarden MCP prerequisites,
+# plus ffmpeg for local Whisper transcription.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl ca-certificates gnupg git openssh-client && \
+    apt-get install -y --no-install-recommends curl ca-certificates gnupg git ffmpeg && \
     mkdir -p /etc/apt/keyrings && \
     curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg && \
     echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" > /etc/apt/sources.list.d/nodesource.list && \
@@ -24,7 +25,8 @@ RUN mkdir -p nanobot bridge && touch nanobot/__init__.py && \
 # Copy the full source and install
 COPY nanobot/ nanobot/
 COPY bridge/ bridge/
-RUN uv pip install --system --no-cache .
+RUN uv pip install --system --no-cache . && \
+    uv pip install --system --no-cache openai-whisper
 
 # Build the WhatsApp bridge
 RUN git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"

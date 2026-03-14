@@ -842,8 +842,8 @@ Config file: `~/.nanobot/config.json`
 ### Providers
 
 > [!TIP]
-> - **Groq** provides free voice transcription via Whisper. If configured, Telegram voice messages will be automatically transcribed.
-> - **MiniMax Coding Plan**: Exclusive discount links for the nanobot community: [Overseas](https://platform.minimax.io/subscribe/coding-plan?code=9txpdXw04g&source=link) · [Mainland China](https://platform.minimaxi.com/subscribe/token-plan?code=GILTJpMTqZ&source=link)
+> - **Zero-cost local transcription:** install the local Whisper CLI and nanobot will auto-detect it before any paid provider. `ffmpeg` is required. If you create a repo-local `.venv-whisper`, nanobot will auto-detect that too.
+> - **Zhipu Coding Plan**: If you're on Zhipu's coding plan, set `"apiBase": "https://open.bigmodel.cn/api/coding/paas/v4"` in your zhipu provider config.
 > - **MiniMax (Mainland China)**: If your API key is from MiniMax's mainland China platform (minimaxi.com), set `"apiBase": "https://api.minimaxi.com/v1"` in your minimax provider config.
 > - **VolcEngine / BytePlus Coding Plan**: Use dedicated providers `volcengineCodingPlan` or `byteplusCodingPlan` instead of the pay-per-use `volcengine` / `byteplus` providers.
 > - **Zhipu Coding Plan**: If you're on Zhipu's coding plan, set `"apiBase": "https://open.bigmodel.cn/api/coding/paas/v4"` in your zhipu provider config.
@@ -860,7 +860,8 @@ Config file: `~/.nanobot/config.json`
 | `azure_openai` | LLM (Azure OpenAI) | [portal.azure.com](https://portal.azure.com) |
 | `openai` | LLM (GPT direct) | [platform.openai.com](https://platform.openai.com) |
 | `deepseek` | LLM (DeepSeek direct) | [platform.deepseek.com](https://platform.deepseek.com) |
-| `groq` | LLM + **Voice transcription** (Whisper) | [console.groq.com](https://console.groq.com) |
+| `groq` | LLM | [console.groq.com](https://console.groq.com) |
+| `gemini` | LLM (Gemini direct) | [aistudio.google.com](https://aistudio.google.com) |
 | `minimax` | LLM (MiniMax direct) | [platform.minimaxi.com](https://platform.minimaxi.com) |
 | `gemini` | LLM (Gemini direct) | [aistudio.google.com](https://aistudio.google.com) |
 | `aihubmix` | LLM (API gateway, access to all models) | [aihubmix.com](https://aihubmix.com) |
@@ -875,6 +876,11 @@ Config file: `~/.nanobot/config.json`
 | `vllm` | LLM (local, any OpenAI-compatible server) | — |
 | `openai_codex` | LLM (Codex, OAuth) | `nanobot provider login openai-codex` |
 | `github_copilot` | LLM (GitHub Copilot, OAuth) | `nanobot provider login github-copilot` |
+
+Local Whisper uses these optional environment variables:
+- `NANOBOT_TRANSCRIBE_COMMAND` to override the command path or use `python -m whisper`
+- `NANOBOT_TRANSCRIBE_MODEL` to choose the local Whisper model (`base` by default)
+- `NANOBOT_TRANSCRIBE_LANGUAGE` to pin a language code for faster local transcription
 
 <details>
 <summary><b>OpenAI Codex (OAuth)</b></summary>
@@ -1616,6 +1622,8 @@ docker compose up -d nanobot-gateway           # start gateway
 ```
 
 If you prefer not to store Bitwarden credentials in `config.json`, export `BW_CLIENTID`, `BW_CLIENTSECRET`, and `BW_PASSWORD_FILE` before `docker compose up` so `nanobot bitwarden-mcp` can renew `BW_SESSION` automatically.
+
+The shipped Docker image now includes `ffmpeg` and local Whisper, so containers can transcribe audio at zero API cost by default. `docker-compose.yml` also mounts `~/.cache/whisper` into the container so Whisper model downloads persist across restarts. Set `NANOBOT_TRANSCRIBE_MODEL=tiny` if you want the lightest local model, or override `NANOBOT_TRANSCRIBE_LANGUAGE` / `NANOBOT_TRANSCRIBE_COMMAND` as needed.
 
 ```bash
 docker compose run --rm nanobot-cli agent -m "Hello!"   # run CLI

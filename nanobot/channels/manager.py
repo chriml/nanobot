@@ -38,23 +38,13 @@ class ChannelManager:
         """Initialize channels discovered via pkgutil scan + entry_points plugins."""
         from nanobot.channels.registry import discover_all
 
-        groq_key = self.config.providers.groq.api_key
-
-        for name, cls in discover_all().items():
-            section = getattr(self.config.channels, name, None)
-            if section is None:
-                continue
-            enabled = (
-                section.get("enabled", False)
-                if isinstance(section, dict)
-                else getattr(section, "enabled", False)
-            )
-            if not enabled:
+        for modname in discover_channel_names():
+            section = getattr(self.config.channels, modname, None)
+            if not section or not getattr(section, "enabled", False):
                 continue
             try:
                 channel = cls(section, self.bus)
-                channel.transcription_api_key = groq_key
-                self.channels[name] = channel
+                self.channels[modname] = channel
                 logger.info("{} channel enabled", cls.display_name)
             except Exception as e:
                 logger.warning("{} channel not available: {}", name, e)
