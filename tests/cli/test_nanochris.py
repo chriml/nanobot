@@ -75,6 +75,7 @@ def test_nanochris_manage_main_actions(tmp_path):
 
     assert start_result.exit_code == 0
     assert "docker run -d --name nanochris-chris" in _strip_ansi(start_result.stdout)
+    assert "/root/.local/share/oauth-cli-kit" in _strip_ansi(start_result.stdout)
 
     assert stop_result.exit_code == 0
     assert "docker rm -f nanochris-chris" in _strip_ansi(stop_result.stdout)

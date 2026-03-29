@@ -87,6 +87,12 @@ def _oauth_host_dir() -> Path:
     return Path(user_data_dir("oauth-cli-kit", appauthor=False))
 
 
+def _oauth_volume_mount() -> str:
+    oauth_dir = _oauth_host_dir()
+    oauth_dir.mkdir(parents=True, exist_ok=True)
+    return f"{oauth_dir.expanduser().resolve(strict=False)}:/root/.local/share/oauth-cli-kit"
+
+
 @app.command()
 def newbot(
     name: str = typer.Argument(..., help="Display name for the bot instance"),
@@ -225,6 +231,7 @@ def manage(
             remove=False,
             detached=True,
             host_port=host_port,
+            volume_mounts=[_oauth_volume_mount()],
             nanobot_args=[
                 "gateway",
                 *extra,
@@ -252,8 +259,6 @@ def manage(
 
         target = extra[0].lower()
         if target == "codex":
-            oauth_dir = _oauth_host_dir()
-            oauth_dir.mkdir(parents=True, exist_ok=True)
             command = [
                 "docker",
                 "run",
@@ -262,7 +267,7 @@ def manage(
                 "-v",
                 f"{instance.root.expanduser().resolve(strict=False)}:/root/.nanobot",
                 "-v",
-                f"{oauth_dir.expanduser().resolve(strict=False)}:/root/.local/share/oauth-cli-kit",
+                _oauth_volume_mount(),
                 get_instance_image(image),
                 "provider",
                 "login",

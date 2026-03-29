@@ -117,6 +117,7 @@ def build_docker_instance_command(
     detached: bool = False,
     host_port: int | None = None,
     container_name: str | None = None,
+    volume_mounts: list[str] | None = None,
 ) -> list[str]:
     """Build a Docker command for an isolated instance container."""
     command = ["docker", "run"]
@@ -137,6 +138,8 @@ def build_docker_instance_command(
             f"{instance.root.expanduser().resolve(strict=False)}:/root/.nanobot",
         ]
     )
+    for volume_mount in volume_mounts or []:
+        command.extend(["-v", volume_mount])
     if host_port is not None:
         command.extend(["-p", f"{host_port}:18790"])
 
