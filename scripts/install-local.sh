@@ -4,19 +4,50 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 
-if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
-  echo "python executable not found: $PYTHON_BIN" >&2
+find_python_bin() {
+  local candidate
+  for candidate in \
+    "$PYTHON_BIN" \
+    /opt/homebrew/bin/python3 \
+    /opt/homebrew/bin/python3.14 \
+    python3.14 \
+    python3 \
+    python
+  do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+PYTHON_BIN="$(find_python_bin || true)"
+
+if [ -z "${PYTHON_BIN:-}" ]; then
+  echo "python executable not found" >&2
   exit 1
 fi
 
 if ! "$PYTHON_BIN" -m pip --version >/dev/null 2>&1; then
   echo "pip is not available for $PYTHON_BIN, attempting to bootstrap it with ensurepip"
   if ! "$PYTHON_BIN" -m ensurepip --upgrade >/dev/null 2>&1; then
-    echo "failed to bootstrap pip via ensurepip for $PYTHON_BIN" >&2
-    echo "install pip or use a Python build that includes ensurepip, then rerun this script" >&2
-    exit 1
+    for fallback in /opt/homebrew/bin/python3 /opt/homebrew/bin/python3.14 python3.14 python3 python; do
+      if command -v "$fallback" >/dev/null 2>&1 && "$fallback" -m pip --version >/dev/null 2>&1; then
+        PYTHON_BIN="$fallback"
+        break
+      fi
+    done
+    if ! "$PYTHON_BIN" -m pip --version >/dev/null 2>&1; then
+      echo "failed to bootstrap pip via ensurepip for $PYTHON_BIN" >&2
+      echo "install pip or use a Python build that includes ensurepip, then rerun this script" >&2
+      echo "tip: on this machine /opt/homebrew/bin/python3 looks like the right candidate" >&2
+      exit 1
+    fi
   fi
 fi
+
+echo "Using Python: $PYTHON_BIN"
 
 if "$PYTHON_BIN" - <<'PY' >/dev/null 2>&1
 import sys
