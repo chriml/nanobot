@@ -19,7 +19,7 @@ def _make_loop(tmp_path):
 
     with patch("nanobot.agent.loop.ContextBuilder"), \
          patch("nanobot.agent.loop.SessionManager"), \
-         patch("nanobot.agent.loop.SubagentManager") as MockSubMgr:
+         patch("nanobot.agent.loop.SpawnedAgentRuntime") as MockSubMgr:
         MockSubMgr.return_value.cancel_by_session = AsyncMock(return_value=0)
         loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path)
     return loop
@@ -308,8 +308,8 @@ async def test_loop_stream_filter_handles_think_only_prefix_without_crashing(tmp
 
 
 @pytest.mark.asyncio
-async def test_subagent_max_iterations_announces_existing_fallback(tmp_path, monkeypatch):
-    from nanobot.agent.subagent import SubagentManager
+async def test_spawned_agent_max_iterations_announces_existing_fallback(tmp_path, monkeypatch):
+    from nanobot.agent.spawned import SpawnedAgentRuntime
     from nanobot.bus.queue import MessageBus
 
     bus = MessageBus()
@@ -319,7 +319,7 @@ async def test_subagent_max_iterations_announces_existing_fallback(tmp_path, mon
         content="working",
         tool_calls=[ToolCallRequest(id="call_1", name="list_dir", arguments={})],
     ))
-    mgr = SubagentManager(provider=provider, workspace=tmp_path, bus=bus)
+    mgr = SpawnedAgentRuntime(provider=provider, workspace=tmp_path, bus=bus)
     mgr._announce_result = AsyncMock()
 
     async def fake_execute(self, name, arguments):
@@ -327,7 +327,7 @@ async def test_subagent_max_iterations_announces_existing_fallback(tmp_path, mon
 
     monkeypatch.setattr("nanobot.agent.tools.registry.ToolRegistry.execute", fake_execute)
 
-    await mgr._run_subagent("sub-1", "do task", "label", {"channel": "test", "chat_id": "c1"})
+    await mgr._run_agent("agent-1", "do task", "label", {"channel": "test", "chat_id": "c1"})
 
     mgr._announce_result.assert_awaited_once()
     args = mgr._announce_result.await_args.args

@@ -87,7 +87,9 @@ allow-direct-references = true
 [tool.hatch.build]
 include = [
     "nanobot/**/*.py",
+    "nanobot/templates/.gitignore",
     "nanobot/templates/**/*.md",
+    "nanobot/templates/**/*.yaml",
     "nanobot/skills/**/*.md",
     "nanobot/skills/**/*.sh",
 ]

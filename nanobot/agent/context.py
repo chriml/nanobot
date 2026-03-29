@@ -8,6 +8,7 @@ from typing import Any
 
 from nanobot.utils.helpers import current_time_str
 
+from nanobot.agent.harness import WorkspaceHarness
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.skills import SkillsLoader
 from nanobot.utils.helpers import build_assistant_message, detect_image_mime
@@ -22,6 +23,7 @@ class ContextBuilder:
     def __init__(self, workspace: Path, timezone: str | None = None):
         self.workspace = workspace
         self.timezone = timezone
+        self.harness = WorkspaceHarness(workspace)
         self.memory = MemoryStore(workspace)
         self.skills = SkillsLoader(workspace)
 
@@ -32,6 +34,10 @@ class ContextBuilder:
         bootstrap = self._load_bootstrap_files()
         if bootstrap:
             parts.append(bootstrap)
+
+        harness_prompt = self.harness.build_system_prompt()
+        if harness_prompt:
+            parts.append(harness_prompt)
 
         memory = self.memory.get_memory_context()
         if memory:

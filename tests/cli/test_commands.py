@@ -8,6 +8,7 @@ from typer.testing import CliRunner
 
 from nanobot.bus.events import OutboundMessage
 from nanobot.cli.commands import _make_provider, app
+from nanobot.config.paths import get_agent_workspace_path
 from nanobot.config.schema import Config
 from nanobot.providers.openai_codex_provider import _strip_model_prefix
 from nanobot.providers.registry import find_by_name
@@ -30,7 +31,8 @@ def mock_paths():
     with patch("nanobot.config.loader.get_config_path") as mock_cp, \
          patch("nanobot.config.loader.save_config") as mock_sc, \
          patch("nanobot.config.loader.load_config") as mock_lc, \
-         patch("nanobot.cli.commands.get_workspace_path") as mock_ws:
+         patch("nanobot.cli.commands.get_workspace_path") as mock_ws, \
+         patch("nanobot.cli.commands.ensure_workspace_git_root", return_value=False):
 
         base_dir = Path("./test_onboard_data")
         if base_dir.exists():
@@ -69,8 +71,10 @@ def test_onboard_fresh_install(mock_paths):
     assert "nanobot is ready" in result.stdout
     assert config_file.exists()
     assert (workspace_dir / "AGENTS.md").exists()
+    assert (workspace_dir / ".gitignore").exists()
+    assert (workspace_dir / "harness" / "definition.yaml").exists()
     assert (workspace_dir / "memory" / "MEMORY.md").exists()
-    expected_workspace = Config().workspace_path
+    expected_workspace = get_agent_workspace_path("default")
     assert mock_ws.call_args.args == (expected_workspace,)
 
 
@@ -130,6 +134,7 @@ def test_onboard_help_shows_workspace_and_config_options():
     assert "-w" in stripped_output
     assert "--config" in stripped_output
     assert "-c" in stripped_output
+    assert "--name" in stripped_output
     assert "--wizard" in stripped_output
     assert "--dir" not in stripped_output
 
@@ -174,6 +179,25 @@ def test_onboard_uses_explicit_config_and_workspace_paths(tmp_path, monkeypatch)
     assert f"--config {resolved_config}" in compact_output
 
 
+def test_onboard_name_sets_default_agent_workspace(tmp_path, monkeypatch):
+    config_path = tmp_path / "instance" / "config.json"
+    expected_workspace = get_agent_workspace_path("Alpha Bot")
+
+    monkeypatch.setattr("nanobot.channels.registry.discover_all", lambda: {})
+    monkeypatch.setattr("nanobot.cli.commands.ensure_workspace_git_root", lambda _workspace: False)
+
+    result = runner.invoke(
+        app,
+        ["onboard", "--config", str(config_path), "--name", "Alpha Bot"],
+    )
+
+    assert result.exit_code == 0
+    saved = Config.model_validate(json.loads(config_path.read_text(encoding="utf-8")))
+    assert saved.agents.defaults.name == "Alpha Bot"
+    assert saved.workspace_path == expected_workspace
+    assert (expected_workspace / "harness" / "definition.yaml").exists()
+
+
 def test_onboard_wizard_preserves_explicit_config_in_next_steps(tmp_path, monkeypatch):
     config_path = tmp_path / "instance" / "config.json"
     workspace_path = tmp_path / "workspace"
@@ -211,6 +235,22 @@ def test_config_matches_openai_codex_with_hyphen_prefix():
     config.agents.defaults.model = "openai-codex/gpt-5.1-codex"
 
     assert config.get_provider_name() == "openai_codex"
+
+
+def test_config_uses_openai_sdk_for_openai_models() -> None:
+    config = Config()
+    config.agents.defaults.model = "openai/gpt-4.1"
+    config.providers.openai.api_key = "sk-test"
+
+    assert config.get_provider_name() == "openai"
+
+
+def test_config_uses_anthropic_sdk_for_anthropic_models() -> None:
+    config = Config()
+    config.agents.defaults.model = "anthropic/claude-opus-4-5"
+    config.providers.anthropic.api_key = "sk-ant-test"
+
+    assert config.get_provider_name() == "anthropic"
 
 
 def test_config_dump_excludes_oauth_provider_blocks():

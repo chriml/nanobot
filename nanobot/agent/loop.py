@@ -17,7 +17,7 @@ from nanobot.agent.context import ContextBuilder
 from nanobot.agent.hook import AgentHook, AgentHookContext
 from nanobot.agent.memory import MemoryConsolidator
 from nanobot.agent.runner import AgentRunSpec, AgentRunner
-from nanobot.agent.subagent import SubagentManager
+from nanobot.agent.spawned import SpawnedAgentRuntime
 from nanobot.agent.tools.cron import CronTool
 from nanobot.agent.skills import BUILTIN_SKILLS_DIR
 from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
@@ -90,7 +90,7 @@ class AgentLoop:
         self.sessions = session_manager or SessionManager(workspace)
         self.tools = ToolRegistry()
         self.runner = AgentRunner(provider)
-        self.subagents = SubagentManager(
+        self.spawned_agents = SpawnedAgentRuntime(
             provider=provider,
             workspace=workspace,
             bus=bus,
@@ -100,6 +100,7 @@ class AgentLoop:
             exec_config=self.exec_config,
             restrict_to_workspace=restrict_to_workspace,
         )
+        self.subagents = self.spawned_agents
 
         self._running = False
         self._mcp_servers = mcp_servers or {}
@@ -145,7 +146,7 @@ class AgentLoop:
         self.tools.register(WebSearchTool(config=self.web_search_config, proxy=self.web_proxy))
         self.tools.register(WebFetchTool(proxy=self.web_proxy))
         self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
-        self.tools.register(SpawnTool(manager=self.subagents))
+        self.tools.register(SpawnTool(manager=self.spawned_agents))
         if self.cron_service:
             self.tools.register(
                 CronTool(self.cron_service, default_timezone=self.context.timezone or "UTC")
@@ -405,7 +406,7 @@ class AgentLoop:
             await self.memory_consolidator.maybe_consolidate_by_tokens(session)
             self._set_tool_context(channel, chat_id, msg.metadata.get("message_id"))
             history = session.get_history(max_messages=0)
-            current_role = "assistant" if msg.sender_id == "subagent" else "user"
+            current_role = "assistant" if SpawnedAgentRuntime.is_internal_message(msg) else "user"
             messages = self.context.build_messages(
                 history=history,
                 current_message=msg.content, channel=channel, chat_id=chat_id,

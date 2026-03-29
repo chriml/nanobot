@@ -25,7 +25,7 @@ def _make_loop():
 
     with patch("nanobot.agent.loop.ContextBuilder"), \
          patch("nanobot.agent.loop.SessionManager"), \
-         patch("nanobot.agent.loop.SubagentManager"):
+         patch("nanobot.agent.loop.SpawnedAgentRuntime"):
         loop = AgentLoop(bus=bus, provider=provider, workspace=workspace)
     return loop, bus
 

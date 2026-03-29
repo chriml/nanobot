@@ -34,9 +34,13 @@ from rich.text import Text
 
 from nanobot import __logo__, __version__
 from nanobot.cli.stream import StreamRenderer, ThinkingSpinner
-from nanobot.config.paths import get_workspace_path, is_default_workspace
+from nanobot.config.paths import (
+    get_agent_workspace_path,
+    get_workspace_path,
+    is_default_workspace,
+)
 from nanobot.config.schema import Config
-from nanobot.utils.helpers import sync_workspace_templates
+from nanobot.utils.helpers import ensure_workspace_git_root, sync_workspace_templates
 
 app = typer.Typer(
     name="nanobot",
@@ -247,10 +251,34 @@ def main(
 # ============================================================================
 
 
+def _workspace_follows_agent_name(workspace: Path, name: str | None) -> bool:
+    """Return whether a workspace is still using an auto-derived agent path."""
+    resolved = workspace.expanduser().resolve(strict=False)
+    return (
+        resolved == get_agent_workspace_path(name).resolve(strict=False)
+        or is_default_workspace(resolved)
+    )
+
+
+def _maybe_assign_workspace_from_agent_name(
+    config: Config,
+    *,
+    previous_name: str,
+    previous_workspace: Path,
+) -> None:
+    """Update the workspace only when it is still tracking the generated default."""
+    current_workspace = config.workspace_path
+    if current_workspace.resolve(strict=False) != previous_workspace.resolve(strict=False):
+        return
+    if _workspace_follows_agent_name(previous_workspace, previous_name):
+        config.agents.defaults.workspace = str(get_agent_workspace_path(config.agents.defaults.name))
+
+
 @app.command()
 def onboard(
     workspace: str | None = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
     config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
+    name: str | None = typer.Option(None, "--name", help="Agent name used for the default workspace path"),
     wizard: bool = typer.Option(False, "--wizard", help="Use interactive wizard"),
 ):
     """Initialize nanobot configuration and workspace."""
@@ -263,33 +291,54 @@ def onboard(
         console.print(f"[dim]Using config: {config_path}[/dim]")
     else:
         config_path = get_config_path()
-
-    def _apply_workspace_override(loaded: Config) -> Config:
-        if workspace:
-            loaded.agents.defaults.workspace = workspace
-        return loaded
+    config_exists = config_path.exists()
+    reset_existing = False
+    refreshed_existing = False
 
     # Create or update config
-    if config_path.exists():
+    if config_exists:
         if wizard:
-            config = _apply_workspace_override(load_config(config_path))
+            config = load_config(config_path)
         else:
             console.print(f"[yellow]Config already exists at {config_path}[/yellow]")
             console.print("  [bold]y[/bold] = overwrite with defaults (existing values will be lost)")
             console.print("  [bold]N[/bold] = refresh config, keeping existing values and adding new fields")
             if typer.confirm("Overwrite?"):
-                config = _apply_workspace_override(Config())
-                save_config(config, config_path)
-                console.print(f"[green]✓[/green] Config reset to defaults at {config_path}")
+                config = Config()
+                reset_existing = True
+                config_exists = False
             else:
-                config = _apply_workspace_override(load_config(config_path))
-                save_config(config, config_path)
-                console.print(f"[green]✓[/green] Config refreshed at {config_path} (existing values preserved)")
+                config = load_config(config_path)
+                refreshed_existing = True
     else:
-        config = _apply_workspace_override(Config())
+        config = Config()
+        config_exists = False
         # In wizard mode, don't save yet - the wizard will handle saving if should_save=True
         if not wizard:
-            save_config(config, config_path)
+            pass
+
+    pre_name = config.agents.defaults.name
+    pre_workspace = config.workspace_path
+    if name:
+        config.agents.defaults.name = name
+    if workspace:
+        config.agents.defaults.workspace = workspace
+    elif not config_exists:
+        config.agents.defaults.workspace = str(get_agent_workspace_path(config.agents.defaults.name))
+    elif name:
+        _maybe_assign_workspace_from_agent_name(
+            config,
+            previous_name=pre_name,
+            previous_workspace=pre_workspace,
+        )
+
+    if not wizard:
+        save_config(config, config_path)
+        if reset_existing:
+            console.print(f"[green]✓[/green] Config reset to defaults at {config_path}")
+        elif refreshed_existing:
+            console.print(f"[green]✓[/green] Config refreshed at {config_path} (existing values preserved)")
+        else:
             console.print(f"[green]✓[/green] Created config at {config_path}")
 
     # Run interactive wizard if enabled
@@ -297,12 +346,20 @@ def onboard(
         from nanobot.cli.onboard import run_onboard
 
         try:
+            wizard_name = config.agents.defaults.name
+            wizard_workspace = config.workspace_path
             result = run_onboard(initial_config=config)
             if not result.should_save:
                 console.print("[yellow]Configuration discarded. No changes were saved.[/yellow]")
                 return
 
             config = result.config
+            if not workspace:
+                _maybe_assign_workspace_from_agent_name(
+                    config,
+                    previous_name=wizard_name,
+                    previous_workspace=wizard_workspace,
+                )
             save_config(config, config_path)
             console.print(f"[green]✓[/green] Config saved at {config_path}")
         except Exception as e:
@@ -318,6 +375,8 @@ def onboard(
         console.print(f"[green]✓[/green] Created workspace at {workspace_path}")
 
     sync_workspace_templates(workspace_path)
+    if ensure_workspace_git_root(workspace_path):
+        console.print(f"[green]✓[/green] Initialized git repository at {workspace_path}")
 
     agent_cmd = 'nanobot agent -m "Hello!"'
     gateway_cmd = "nanobot gateway"
@@ -380,66 +439,21 @@ def _make_provider(config: Config):
 
     Routing is driven by ``ProviderSpec.backend`` in the registry.
     """
-    from nanobot.providers.base import GenerationSettings
-    from nanobot.providers.registry import find_by_name
+    from nanobot.providers.factory import make_provider
 
-    model = config.agents.defaults.model
-    provider_name = config.get_provider_name(model)
-    p = config.get_provider(model)
-    spec = find_by_name(provider_name) if provider_name else None
-    backend = spec.backend if spec else "openai_compat"
-
-    # --- validation ---
-    if backend == "azure_openai":
-        if not p or not p.api_key or not p.api_base:
+    try:
+        return make_provider(config)
+    except ValueError as exc:
+        if str(exc) == "azure_openai_missing_credentials":
             console.print("[red]Error: Azure OpenAI requires api_key and api_base.[/red]")
             console.print("Set them in ~/.nanobot/config.json under providers.azure_openai section")
             console.print("Use the model field to specify the deployment name.")
-            raise typer.Exit(1)
-    elif backend == "openai_compat" and not model.startswith("bedrock/"):
-        needs_key = not (p and p.api_key)
-        exempt = spec and (spec.is_oauth or spec.is_local or spec.is_direct)
-        if needs_key and not exempt:
+        elif str(exc) == "missing_api_key":
             console.print("[red]Error: No API key configured.[/red]")
             console.print("Set one in ~/.nanobot/config.json under providers section")
-            raise typer.Exit(1)
-
-    # --- instantiation by backend ---
-    if backend == "openai_codex":
-        from nanobot.providers.openai_codex_provider import OpenAICodexProvider
-        provider = OpenAICodexProvider(default_model=model)
-    elif backend == "azure_openai":
-        from nanobot.providers.azure_openai_provider import AzureOpenAIProvider
-        provider = AzureOpenAIProvider(
-            api_key=p.api_key,
-            api_base=p.api_base,
-            default_model=model,
-        )
-    elif backend == "anthropic":
-        from nanobot.providers.anthropic_provider import AnthropicProvider
-        provider = AnthropicProvider(
-            api_key=p.api_key if p else None,
-            api_base=config.get_api_base(model),
-            default_model=model,
-            extra_headers=p.extra_headers if p else None,
-        )
-    else:
-        from nanobot.providers.openai_compat_provider import OpenAICompatProvider
-        provider = OpenAICompatProvider(
-            api_key=p.api_key if p else None,
-            api_base=config.get_api_base(model),
-            default_model=model,
-            extra_headers=p.extra_headers if p else None,
-            spec=spec,
-        )
-
-    defaults = config.agents.defaults
-    provider.generation = GenerationSettings(
-        temperature=defaults.temperature,
-        max_tokens=defaults.max_tokens,
-        reasoning_effort=defaults.reasoning_effort,
-    )
-    return provider
+        else:
+            console.print(f"[red]Error: {exc}[/red]")
+        raise typer.Exit(1) from exc
 
 
 def _load_runtime_config(config: str | None = None, workspace: str | None = None) -> Config:
@@ -511,6 +525,7 @@ def gateway(
     from nanobot.cron.types import CronJob
     from nanobot.heartbeat.service import HeartbeatService
     from nanobot.session.manager import SessionManager
+    from nanobot.update.service import AutoUpdateService
 
     if verbose:
         import logging
@@ -663,6 +678,12 @@ def gateway(
         timezone=config.agents.defaults.timezone,
     )
 
+    async def on_updated_restart() -> None:
+        console.print("[yellow]Auto-update applied, restarting gateway...[/yellow]")
+        os.execv(sys.executable, [sys.executable, "-m", "nanobot", *sys.argv[1:]])
+
+    updates = AutoUpdateService(config.updates, on_updated=on_updated_restart)
+
     if channels.enabled_channels:
         console.print(f"[green]✓[/green] Channels enabled: {', '.join(channels.enabled_channels)}")
     else:
@@ -673,11 +694,17 @@ def gateway(
         console.print(f"[green]✓[/green] Cron: {cron_status['jobs']} scheduled jobs")
 
     console.print(f"[green]✓[/green] Heartbeat: every {hb_cfg.interval_s}s")
+    if config.updates.enabled:
+        console.print(
+            f"[green]✓[/green] Auto-update: every {config.updates.interval_s}s "
+            f"({config.updates.mode}, {config.updates.remote}/{config.updates.branch})"
+        )
 
     async def run():
         try:
             await cron.start()
             await heartbeat.start()
+            await updates.start()
             await asyncio.gather(
                 agent.run(),
                 channels.start_all(),
@@ -690,6 +717,7 @@ def gateway(
             console.print(traceback.format_exc())
         finally:
             await agent.close_mcp()
+            updates.stop()
             heartbeat.stop()
             cron.stop()
             agent.stop()

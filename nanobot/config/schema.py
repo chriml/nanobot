@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic.alias_generators import to_camel
 from pydantic_settings import BaseSettings
 
@@ -31,6 +31,7 @@ class ChannelsConfig(Base):
 class AgentDefaults(Base):
     """Default agent configuration."""
 
+    name: str = "default"
     workspace: str = "~/.nanobot/workspace"
     model: str = "anthropic/claude-opus-4-5"
     provider: str = (
@@ -42,6 +43,13 @@ class AgentDefaults(Base):
     max_tool_iterations: int = 40
     reasoning_effort: str | None = None  # low / medium / high - enables LLM thinking mode
     timezone: str = "UTC"  # IANA timezone, e.g. "Asia/Shanghai", "America/New_York"
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        """Keep agent names non-empty while preserving user-facing casing."""
+        cleaned = value.strip()
+        return cleaned or "default"
 
 
 class AgentsConfig(Base):
@@ -104,6 +112,17 @@ class GatewayConfig(Base):
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
 
 
+class UpdatesConfig(Base):
+    """Automatic repository update configuration."""
+
+    enabled: bool = True
+    interval_s: int = 60 * 60
+    mode: Literal["ff_only", "local_branch"] = "ff_only"
+    remote: str = "upstream"
+    branch: str = "main"
+    local_branch: str = "nanobot-local"
+
+
 class WebSearchConfig(Base):
     """Web search tool configuration."""
 
@@ -157,6 +176,7 @@ class Config(BaseSettings):
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
+    updates: UpdatesConfig = Field(default_factory=UpdatesConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
 
     @property

@@ -71,6 +71,7 @@ def test_onboard_does_not_crash_with_legacy_memory_window(tmp_path, monkeypatch)
 
     monkeypatch.setattr("nanobot.config.loader.get_config_path", lambda: config_path)
     monkeypatch.setattr("nanobot.cli.commands.get_workspace_path", lambda _workspace=None: workspace)
+    monkeypatch.setattr("nanobot.cli.commands.ensure_workspace_git_root", lambda _workspace: False)
 
     from typer.testing import CliRunner
     from nanobot.cli.commands import app
@@ -103,6 +104,7 @@ def test_onboard_refresh_backfills_missing_channel_fields(tmp_path, monkeypatch)
 
     monkeypatch.setattr("nanobot.config.loader.get_config_path", lambda: config_path)
     monkeypatch.setattr("nanobot.cli.commands.get_workspace_path", lambda _workspace=None: workspace)
+    monkeypatch.setattr("nanobot.cli.commands.ensure_workspace_git_root", lambda _workspace: False)
     monkeypatch.setattr(
         "nanobot.channels.registry.discover_all",
         lambda: {

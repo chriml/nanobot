@@ -1,5 +1,8 @@
 """Tests for multi-provider web search."""
 
+import sys
+from types import ModuleType
+
 import httpx
 import pytest
 
@@ -16,6 +19,12 @@ def _response(status: int = 200, json: dict | None = None) -> httpx.Response:
     r = httpx.Response(status, json=json)
     r._request = httpx.Request("GET", "https://mock")
     return r
+
+
+def _install_mock_ddgs(monkeypatch, mock_cls) -> None:
+    ddgs_module = ModuleType("ddgs")
+    ddgs_module.DDGS = mock_cls
+    monkeypatch.setitem(sys.modules, "ddgs", ddgs_module)
 
 
 @pytest.mark.asyncio
@@ -73,12 +82,10 @@ async def test_duckduckgo_search(monkeypatch):
         def text(self, query, max_results=5):
             return [{"title": "DDG Result", "href": "https://ddg.example", "body": "From DuckDuckGo"}]
 
+    _install_mock_ddgs(monkeypatch, MockDDGS)
     monkeypatch.setattr("nanobot.agent.tools.web.DDGS", MockDDGS, raising=False)
     import nanobot.agent.tools.web as web_mod
     monkeypatch.setattr(web_mod, "DDGS", MockDDGS, raising=False)
-
-    from ddgs import DDGS
-    monkeypatch.setattr("ddgs.DDGS", MockDDGS)
 
     tool = _tool(provider="duckduckgo")
     result = await tool.execute(query="hello")
@@ -94,7 +101,7 @@ async def test_brave_fallback_to_duckduckgo_when_no_key(monkeypatch):
         def text(self, query, max_results=5):
             return [{"title": "Fallback", "href": "https://ddg.example", "body": "DuckDuckGo fallback"}]
 
-    monkeypatch.setattr("ddgs.DDGS", MockDDGS)
+    _install_mock_ddgs(monkeypatch, MockDDGS)
     monkeypatch.delenv("BRAVE_API_KEY", raising=False)
 
     tool = _tool(provider="brave", api_key="")
@@ -147,7 +154,7 @@ async def test_searxng_no_base_url_falls_back(monkeypatch):
         def text(self, query, max_results=5):
             return [{"title": "Fallback", "href": "https://ddg.example", "body": "fallback"}]
 
-    monkeypatch.setattr("ddgs.DDGS", MockDDGS)
+    _install_mock_ddgs(monkeypatch, MockDDGS)
     monkeypatch.delenv("SEARXNG_BASE_URL", raising=False)
 
     tool = _tool(provider="searxng", base_url="")
