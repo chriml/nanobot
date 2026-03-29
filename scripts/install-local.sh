@@ -62,6 +62,16 @@ fi
 echo "Installing nanobot from $ROOT_DIR"
 "$PYTHON_BIN" -m pip install "${INSTALL_ARGS[@]}"
 
+DOCKER_IMAGE="${NANOCHRIS_DOCKER_IMAGE:-nanochris:local}"
+if [ "${NANOCHRIS_SKIP_DOCKER_BUILD:-0}" != "1" ]; then
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "docker is not available; skipping image build for $DOCKER_IMAGE" >&2
+  else
+    echo "Building Docker image: $DOCKER_IMAGE"
+    docker build -t "$DOCKER_IMAGE" "$ROOT_DIR"
+  fi
+fi
+
 BIN_DIR="$("$PYTHON_BIN" - <<'PY'
 import site
 import sys
@@ -79,6 +89,8 @@ echo
 echo "Installed commands:"
 echo "  nanobot"
 echo "  nanochris"
+echo "Docker image:"
+echo "  $DOCKER_IMAGE"
 echo
 echo "If your shell cannot find them yet, add this to your PATH:"
 echo "  export PATH=\"$BIN_DIR:\$PATH\""

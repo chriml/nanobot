@@ -1443,6 +1443,8 @@ nanochris manage "Chris" config
 nanochris manage "Chris" start
 nanochris manage "Chris" stop
 nanochris manage "Chris" logs
+nanochris manage "Chris" login codex
+nanochris manage "Chris" login claude
 ```
 
 You can also apply presets when re-running onboarding:

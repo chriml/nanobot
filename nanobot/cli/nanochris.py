@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
 import typer
 from rich.console import Console
 from rich.text import Text
+from platformdirs import user_data_dir
 
 from nanobot import __logo__, __version__
-from nanobot.config.presets import apply_presets
+from nanobot.config.presets import apply_presets, merge_config_overlay
 from nanobot.instances import (
     build_docker_instance_command,
     build_docker_logs_command,
@@ -70,6 +72,19 @@ def _show_config(instance) -> int:
     console.print()
     console.print(Text(instance.config_path.read_text(encoding="utf-8")))
     return 0
+
+
+def _save_config_overlay(config_path: Path, overlay: dict) -> None:
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    data: dict = {}
+    if config_path.exists():
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+    merged = merge_config_overlay(data, overlay)
+    config_path.write_text(json.dumps(merged, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def _oauth_host_dir() -> Path:
+    return Path(user_data_dir("oauth-cli-kit", appauthor=False))
 
 
 @app.command()
@@ -161,11 +176,11 @@ def manage(
         help="Print the resolved command without running it",
     ),
 ):
-    """Manage an instance with actions: onboard, config, start, stop, logs."""
+    """Manage an instance with actions: onboard, config, start, stop, logs, login."""
     actions = list(ctx.args)
     if not actions:
         console.print(
-            "[red]Missing action.[/red] Use one of: onboard, config, start, stop, logs."
+            "[red]Missing action.[/red] Use one of: onboard, config, start, stop, logs, login."
         )
         raise typer.Exit(2)
 
@@ -230,8 +245,61 @@ def manage(
         command = build_docker_logs_command(instance, follow=follow)
         raise typer.Exit(_run_command(command, dry_run=dry_run))
 
+    if action == "login":
+        if not extra:
+            console.print("[red]Missing login target.[/red] Use one of: codex, claude.")
+            raise typer.Exit(2)
+
+        target = extra[0].lower()
+        if target == "codex":
+            oauth_dir = _oauth_host_dir()
+            oauth_dir.mkdir(parents=True, exist_ok=True)
+            command = [
+                "docker",
+                "run",
+                "-it",
+                "--rm",
+                "-v",
+                f"{instance.root.expanduser().resolve(strict=False)}:/root/.nanobot",
+                "-v",
+                f"{oauth_dir.expanduser().resolve(strict=False)}:/root/.local/share/oauth-cli-kit",
+                get_instance_image(image),
+                "provider",
+                "login",
+                "openai-codex",
+            ]
+            raise typer.Exit(_run_command(command, dry_run=dry_run))
+
+        if target == "claude":
+            api_key = typer.prompt("Anthropic API key", hide_input=True).strip()
+            if not api_key:
+                console.print("[red]API key cannot be empty.[/red]")
+                raise typer.Exit(1)
+            overlay = {
+                "agents": {
+                    "defaults": {
+                        "provider": "anthropic",
+                        "model": "anthropic/claude-opus-4-5",
+                    }
+                },
+                "providers": {
+                    "anthropic": {
+                        "apiKey": api_key,
+                    }
+                },
+            }
+            _save_config_overlay(instance.config_path, overlay)
+            console.print(f"[green]Saved Claude credentials for[/green] {instance.name}")
+            raise typer.Exit(0)
+
+        console.print(
+            f"[red]Unknown login target:[/red] {target} "
+            "[dim](expected one of: codex, claude)[/dim]"
+        )
+        raise typer.Exit(2)
+
     console.print(
         f"[red]Unknown action:[/red] {action} "
-        "[dim](expected one of: onboard, config, start, stop, logs)[/dim]"
+        "[dim](expected one of: onboard, config, start, stop, logs, login)[/dim]"
     )
     raise typer.Exit(2)

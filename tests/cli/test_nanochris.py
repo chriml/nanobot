@@ -81,3 +81,29 @@ def test_nanochris_manage_main_actions(tmp_path):
 
     assert logs_result.exit_code == 0
     assert "docker logs -f nanochris-chris" in _strip_ansi(logs_result.stdout)
+
+
+def test_nanochris_manage_login_codex_dry_run(tmp_path):
+    result = runner.invoke(
+        app,
+        ["manage", "Chris", "--base-dir", str(tmp_path), "--dry-run", "login", "codex"],
+    )
+
+    assert result.exit_code == 0
+    stripped_output = _strip_ansi(result.stdout)
+    assert "provider login openai-codex" in stripped_output
+    assert "/root/.local/share/oauth-cli-kit" in stripped_output
+
+
+def test_nanochris_manage_login_claude_saves_config(tmp_path):
+    result = runner.invoke(
+        app,
+        ["manage", "Chris", "--base-dir", str(tmp_path), "login", "claude"],
+        input="sk-ant-test\n",
+    )
+
+    assert result.exit_code == 0
+    instance = resolve_instance_paths("Chris", base_dir=tmp_path)
+    saved = json.loads(instance.config_path.read_text(encoding="utf-8"))
+    assert saved["agents"]["defaults"]["provider"] == "anthropic"
+    assert saved["providers"]["anthropic"]["apiKey"] == "sk-ant-test"
