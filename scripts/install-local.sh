@@ -10,8 +10,12 @@ if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
 fi
 
 if ! "$PYTHON_BIN" -m pip --version >/dev/null 2>&1; then
-  echo "pip is not available for $PYTHON_BIN" >&2
-  exit 1
+  echo "pip is not available for $PYTHON_BIN, attempting to bootstrap it with ensurepip"
+  if ! "$PYTHON_BIN" -m ensurepip --upgrade >/dev/null 2>&1; then
+    echo "failed to bootstrap pip via ensurepip for $PYTHON_BIN" >&2
+    echo "install pip or use a Python build that includes ensurepip, then rerun this script" >&2
+    exit 1
+  fi
 fi
 
 if "$PYTHON_BIN" - <<'PY' >/dev/null 2>&1
