@@ -230,54 +230,157 @@ def test_newbot_help_shows_base_dir_and_wizard_options():
     assert result.exit_code == 0
     stripped_output = _strip_ansi(result.stdout)
     assert "--base-dir" in stripped_output
+    assert "--image" in stripped_output
     assert "--wizard" in stripped_output
     assert "--no-wizard" in stripped_output
+    assert "--dry-run" in stripped_output
 
 
-def test_newbot_runs_onboard_for_named_instance(tmp_path, monkeypatch):
-    seen = {}
-
-    def fake_onboard(*, workspace, config, name, wizard):
-        seen["workspace"] = workspace
-        seen["config"] = config
-        seen["name"] = name
-        seen["wizard"] = wizard
-
-    monkeypatch.setattr("nanobot.cli.commands.onboard", fake_onboard)
-
+def test_newbot_dry_run_uses_docker_for_named_instance(tmp_path):
     result = runner.invoke(
         app,
-        ["newbot", "Chris", "--base-dir", str(tmp_path)],
+        ["newbot", "Chris", "--base-dir", str(tmp_path), "--dry-run"],
     )
 
     assert result.exit_code == 0
     instance = resolve_instance_paths("Chris", base_dir=tmp_path)
-    assert seen == {
-        "workspace": str(instance.workspace_path),
-        "config": str(instance.config_path),
-        "name": "Chris",
-        "wizard": True,
-    }
     stripped_output = _strip_ansi(result.stdout)
-    assert str(instance.config_path) in stripped_output
-    assert str(instance.workspace_path) in stripped_output
+    assert str(instance.root) in stripped_output
+    assert "docker run" in stripped_output
+    assert "/root/.nanobot/config.json" in stripped_output
+    assert "/root/.nanobot/workspace" in stripped_output
+    assert "--wizard" in stripped_output
 
 
-def test_newbot_can_disable_wizard(tmp_path, monkeypatch):
-    seen = {}
-
-    def fake_onboard(*, workspace, config, name, wizard):
-        seen["wizard"] = wizard
-
-    monkeypatch.setattr("nanobot.cli.commands.onboard", fake_onboard)
-
+def test_newbot_can_disable_wizard(tmp_path):
     result = runner.invoke(
         app,
-        ["newbot", "Chris", "--base-dir", str(tmp_path), "--no-wizard"],
+        ["newbot", "Chris", "--base-dir", str(tmp_path), "--no-wizard", "--dry-run"],
     )
 
     assert result.exit_code == 0
-    assert seen["wizard"] is False
+    stripped_output = _strip_ansi(result.stdout)
+    assert "--wizard" not in stripped_output
+
+
+def test_newbot_applies_presets_before_onboarding(tmp_path):
+    result = runner.invoke(
+        app,
+        [
+            "newbot",
+            "Chris",
+            "--base-dir",
+            str(tmp_path),
+            "--preset",
+            "telegram",
+            "--preset",
+            "openai-codex-gpt-5.2",
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code == 0
+    instance = resolve_instance_paths("Chris", base_dir=tmp_path)
+    saved = json.loads(instance.config_path.read_text(encoding="utf-8"))
+    assert saved["channels"]["telegram"]["enabled"] is True
+    assert saved["agents"]["defaults"]["provider"] == "openai_codex"
+    assert saved["agents"]["defaults"]["model"] == "openai-codex/gpt-5.2-codex"
+
+
+def test_manage_without_action_fails():
+    result = runner.invoke(app, ["manage", "Chris"])
+
+    assert result.exit_code == 2
+    stripped_output = _strip_ansi(result.stdout)
+    assert "Missing action" in stripped_output
+
+
+def test_manage_config_shows_config_contents(tmp_path):
+    instance = resolve_instance_paths("Chris", base_dir=tmp_path)
+    instance.root.mkdir(parents=True)
+    instance.config_path.write_text('{"providers":{"openai":{"apiKey":"sk-test"}}}', encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        ["manage", "Chris", "--base-dir", str(tmp_path), "config"],
+    )
+
+    assert result.exit_code == 0
+    stripped_output = _strip_ansi(result.stdout)
+    assert str(instance.config_path) in stripped_output
+    assert '"openai"' in stripped_output
+
+
+def test_manage_onboard_dry_run_uses_docker(tmp_path):
+    result = runner.invoke(
+        app,
+        ["manage", "Chris", "--base-dir", str(tmp_path), "--dry-run", "onboard"],
+    )
+
+    assert result.exit_code == 0
+    stripped_output = _strip_ansi(result.stdout)
+    assert "docker run" in stripped_output
+    assert "onboard" in stripped_output
+    assert "--wizard" in stripped_output
+
+
+def test_manage_start_dry_run_builds_gateway_container_command(tmp_path):
+    result = runner.invoke(
+        app,
+        ["manage", "Chris", "--base-dir", str(tmp_path), "--dry-run", "--host-port", "18800", "start"],
+    )
+
+    assert result.exit_code == 0
+    stripped_output = _strip_ansi(result.stdout)
+    assert "docker run -d --name nanochris-chris" in stripped_output
+    assert "-p 18800:18790" in stripped_output
+    assert "gateway" in stripped_output
+
+
+def test_manage_stop_dry_run_uses_container_name(tmp_path):
+    result = runner.invoke(
+        app,
+        ["manage", "Chris", "--base-dir", str(tmp_path), "--dry-run", "stop"],
+    )
+
+    assert result.exit_code == 0
+    stripped_output = _strip_ansi(result.stdout)
+    assert "docker rm -f nanochris-chris" in stripped_output
+
+
+def test_manage_logs_dry_run_uses_container_name(tmp_path):
+    result = runner.invoke(
+        app,
+        ["manage", "Chris", "--base-dir", str(tmp_path), "--dry-run", "logs"],
+    )
+
+    assert result.exit_code == 0
+    stripped_output = _strip_ansi(result.stdout)
+    assert "docker logs -f nanochris-chris" in stripped_output
+
+
+def test_manage_onboard_applies_presets_before_onboarding(tmp_path):
+    result = runner.invoke(
+        app,
+        [
+            "manage",
+            "Chris",
+            "--base-dir",
+            str(tmp_path),
+            "--preset",
+            "telegram",
+            "--preset",
+            "openai-codex-gpt-5.2",
+            "--dry-run",
+            "onboard",
+        ],
+    )
+
+    assert result.exit_code == 0
+    instance = resolve_instance_paths("Chris", base_dir=tmp_path)
+    saved = json.loads(instance.config_path.read_text(encoding="utf-8"))
+    assert saved["channels"]["telegram"]["enabled"] is True
+    assert saved["agents"]["defaults"]["provider"] == "openai_codex"
 
 
 def test_instance_help_shows_management_commands():
@@ -291,6 +394,8 @@ def test_instance_help_shows_management_commands():
     assert "agent" in stripped_output
     assert "gateway" in stripped_output
     assert "run" in stripped_output
+    assert "down" in stripped_output
+    assert "logs" in stripped_output
 
 
 def test_instance_show_resolves_named_paths(tmp_path):
@@ -315,8 +420,10 @@ def test_instance_onboard_dry_run_uses_named_instance(tmp_path):
     assert result.exit_code == 0
     stripped_output = _strip_ansi(result.stdout)
     instance = resolve_instance_paths("Chris", base_dir=tmp_path)
-    assert str(instance.config_path) in stripped_output
-    assert str(instance.workspace_path) in stripped_output
+    assert str(instance.root) in stripped_output
+    assert "docker run" in stripped_output
+    assert "/root/.nanobot/config.json" in stripped_output
+    assert "/root/.nanobot/workspace" in stripped_output
     assert "--wizard" in stripped_output
 
 
@@ -328,10 +435,44 @@ def test_instance_agent_dry_run_passes_through_args(tmp_path):
 
     assert result.exit_code == 0
     stripped_output = _strip_ansi(result.stdout)
-    instance = resolve_instance_paths("Chris", base_dir=tmp_path)
-    assert f"--config {instance.config_path}" in stripped_output
-    assert f"--workspace {instance.workspace_path}" in stripped_output
+    assert "/root/.nanobot/config.json" in stripped_output
+    assert "/root/.nanobot/workspace" in stripped_output
     assert "agent -m Hello" in stripped_output
+    assert "docker run" in stripped_output
+
+
+def test_instance_gateway_dry_run_builds_container_command(tmp_path):
+    result = runner.invoke(
+        app,
+        [
+            "instance",
+            "gateway",
+            "Chris",
+            "--base-dir",
+            str(tmp_path),
+            "--dry-run",
+            "--host-port",
+            "18800",
+        ],
+    )
+
+    assert result.exit_code == 0
+    stripped_output = _strip_ansi(result.stdout)
+    assert "docker run" in stripped_output
+    assert "--name nanochris-chris" in stripped_output
+    assert "-p 18800:18790" in stripped_output
+    assert "gateway" in stripped_output
+
+
+def test_instance_logs_dry_run_uses_container_name(tmp_path):
+    result = runner.invoke(
+        app,
+        ["instance", "logs", "Chris", "--base-dir", str(tmp_path), "--dry-run"],
+    )
+
+    assert result.exit_code == 0
+    stripped_output = _strip_ansi(result.stdout)
+    assert "docker logs -f nanochris-chris" in stripped_output
 
 
 def test_instance_list_reads_existing_instances(tmp_path):

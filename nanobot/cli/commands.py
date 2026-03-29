@@ -35,11 +35,17 @@ from rich.text import Text
 
 from nanobot import __logo__, __version__
 from nanobot.cli.stream import StreamRenderer, ThinkingSpinner
+from nanobot.config.presets import apply_presets
 from nanobot.instances import (
-    build_instance_command,
-    build_onboard_command,
-    list_instances,
+    build_docker_instance_command,
+    build_docker_logs_command,
+    build_docker_remove_command,
+    get_container_config_path,
+    get_container_workspace_path,
+    get_instance_container_name,
+    get_instance_image,
     resolve_instance_paths,
+    list_instances,
 )
 from nanobot.config.paths import (
     get_agent_workspace_path,
@@ -411,23 +417,199 @@ def newbot(
         "--base-dir",
         help="Root directory for named instances (defaults to ~/.nanobot/instances)",
     ),
+    image: str | None = typer.Option(
+        None,
+        "--image",
+        envvar="NANOCHRIS_DOCKER_IMAGE",
+        help="Docker image to run (defaults to $NANOCHRIS_DOCKER_IMAGE or nanochris:local)",
+    ),
+    preset: list[str] = typer.Option(
+        None,
+        "--preset",
+        help="Preset name or JSON file path to merge into the instance config before onboarding. Repeatable.",
+    ),
     wizard: bool = typer.Option(
         True,
         "--wizard/--no-wizard",
         help="Run the interactive onboarding wizard immediately",
     ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Print the resolved Docker command without running it",
+    ),
 ):
     """Create a named bot instance and run onboarding for it."""
     instance = resolve_instance_paths(name, base_dir=base_dir)
-    console.print(f"[dim]Instance:[/dim] {instance.name} ({instance.slug})")
-    console.print(f"[dim]Config:[/dim] {instance.config_path}")
-    console.print(f"[dim]Workspace:[/dim] {instance.workspace_path}")
-    onboard(
-        workspace=str(instance.workspace_path),
-        config=str(instance.config_path),
-        name=instance.name,
-        wizard=wizard,
+    if preset:
+        apply_presets(instance.config_path, preset)
+    _print_instance_summary(instance)
+    console.print(f"[dim]Container:[/dim] {get_instance_container_name(instance)}")
+    console.print(f"[dim]Image:[/dim] {get_instance_image(image)}")
+    command = build_docker_instance_command(
+        instance,
+        image=image,
+        interactive=True,
+        remove=True,
+        nanobot_args=[
+            "onboard",
+            "--config",
+            get_container_config_path(),
+            "--workspace",
+            get_container_workspace_path(),
+            "--name",
+            instance.name,
+            *(["--wizard"] if wizard else []),
+        ],
     )
+    raise typer.Exit(_run_instance_command(command, dry_run=dry_run))
+
+
+@app.command(
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
+def manage(
+    ctx: typer.Context,
+    name: str = typer.Argument(..., help="Display name for the bot instance"),
+    base_dir: str | None = typer.Option(
+        None,
+        "--base-dir",
+        help="Root directory for named instances (defaults to ~/.nanobot/instances)",
+    ),
+    image: str | None = typer.Option(
+        None,
+        "--image",
+        envvar="NANOCHRIS_DOCKER_IMAGE",
+        help="Docker image to run (defaults to $NANOCHRIS_DOCKER_IMAGE or nanochris:local)",
+    ),
+    preset: list[str] = typer.Option(
+        None,
+        "--preset",
+        help="Preset name or JSON file path to merge into the instance config before onboarding. Repeatable.",
+    ),
+    host_port: int = typer.Option(
+        18790,
+        "--host-port",
+        help="Host port that maps to the gateway port inside the container",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Print the resolved command without running it",
+    ),
+    follow: bool = typer.Option(
+        True,
+        "--follow/--no-follow",
+        help="Follow logs when using the `logs` action",
+    ),
+):
+    """Manage a named bot instance with a single command surface."""
+    actions = list(ctx.args)
+    if not actions:
+        console.print(
+            "[red]Missing action.[/red] Use one of: onboard, config, start, stop, logs."
+        )
+        raise typer.Exit(2)
+
+    action = actions[0]
+    extra = actions[1:]
+    instance = resolve_instance_paths(name, base_dir=base_dir)
+
+    if action == "config":
+        raise typer.Exit(_show_instance_config(instance))
+
+    _print_instance_summary(instance)
+    console.print(f"[dim]Container:[/dim] {get_instance_container_name(instance)}")
+    console.print(f"[dim]Image:[/dim] {get_instance_image(image)}")
+
+    if action == "onboard":
+        if preset:
+            apply_presets(instance.config_path, preset)
+        wizard = "--no-wizard" not in extra
+        command = build_docker_instance_command(
+            instance,
+            image=image,
+            interactive=True,
+            remove=True,
+            nanobot_args=[
+                "onboard",
+                "--config",
+                get_container_config_path(),
+                "--workspace",
+                get_container_workspace_path(),
+                "--name",
+                instance.name,
+                *(["--wizard"] if wizard else []),
+            ],
+        )
+        raise typer.Exit(_run_instance_command(command, dry_run=dry_run))
+
+    if action == "start":
+        command = build_docker_instance_command(
+            instance,
+            image=image,
+            interactive=False,
+            remove=False,
+            detached=True,
+            host_port=host_port,
+            nanobot_args=[
+                "gateway",
+                *extra,
+                "--config",
+                get_container_config_path(),
+                "--workspace",
+                get_container_workspace_path(),
+            ],
+        )
+        raise typer.Exit(_run_instance_command(command, dry_run=dry_run))
+
+    if action == "stop":
+        command = build_docker_remove_command(instance)
+        raise typer.Exit(_run_instance_command(command, dry_run=dry_run))
+
+    if action == "logs":
+        command = build_docker_logs_command(instance, follow=follow)
+        raise typer.Exit(_run_instance_command(command, dry_run=dry_run))
+
+    if action == "agent":
+        command = build_docker_instance_command(
+            instance,
+            image=image,
+            interactive=True,
+            remove=True,
+            nanobot_args=[
+                "agent",
+                *extra,
+                "--config",
+                get_container_config_path(),
+                "--workspace",
+                get_container_workspace_path(),
+            ],
+        )
+        raise typer.Exit(_run_instance_command(command, dry_run=dry_run))
+
+    if action == "run":
+        command_args = extra or ["agent"]
+        command = build_docker_instance_command(
+            instance,
+            image=image,
+            interactive=True,
+            remove=True,
+            nanobot_args=[
+                *command_args,
+                "--config",
+                get_container_config_path(),
+                "--workspace",
+                get_container_workspace_path(),
+            ],
+        )
+        raise typer.Exit(_run_instance_command(command, dry_run=dry_run))
+
+    console.print(
+        f"[red]Unknown action:[/red] {action} "
+        "[dim](expected one of: onboard, config, start, stop, logs, agent, run)[/dim]"
+    )
+    raise typer.Exit(2)
 
 
 def _print_instance_summary(instance) -> None:
@@ -438,12 +620,23 @@ def _print_instance_summary(instance) -> None:
     console.print(f"[dim]Workspace:[/dim] {instance.workspace_path}")
 
 
-def _run_instance_command(command: list[str], *, dry_run: bool) -> None:
+def _run_instance_command(command: list[str], *, dry_run: bool) -> int:
     """Print and optionally execute a resolved instance command."""
     console.print(f"[dim]Command:[/dim] {' '.join(command)}")
     if dry_run:
-        return
-    raise typer.Exit(subprocess.run(command, check=False).returncode)
+        return 0
+    return subprocess.run(command, check=False).returncode
+
+
+def _show_instance_config(instance) -> int:
+    """Print the config path and current config content for an instance."""
+    _print_instance_summary(instance)
+    if not instance.config_path.exists():
+        console.print("[yellow]Config does not exist yet. Run onboarding first.[/yellow]")
+        return 1
+    console.print()
+    console.print(Text(instance.config_path.read_text(encoding="utf-8")))
+    return 0
 
 
 def _merge_missing_defaults(existing: Any, defaults: Any) -> Any:
@@ -509,6 +702,12 @@ def instance_onboard(
         "--base-dir",
         help="Root directory for named instances (defaults to ~/.nanobot/instances)",
     ),
+    image: str | None = typer.Option(
+        None,
+        "--image",
+        envvar="NANOCHRIS_DOCKER_IMAGE",
+        help="Docker image to run (defaults to $NANOCHRIS_DOCKER_IMAGE or nanochris:local)",
+    ),
     wizard: bool = typer.Option(
         True,
         "--wizard/--no-wizard",
@@ -523,12 +722,25 @@ def instance_onboard(
     """Run onboarding for a named bot instance."""
     instance = resolve_instance_paths(name, base_dir=base_dir)
     _print_instance_summary(instance)
-    command = build_onboard_command(
+    console.print(f"[dim]Container:[/dim] {get_instance_container_name(instance)}")
+    console.print(f"[dim]Image:[/dim] {get_instance_image(image)}")
+    command = build_docker_instance_command(
         instance,
-        python_executable=sys.executable,
-        wizard=wizard,
+        image=image,
+        interactive=True,
+        remove=True,
+        nanobot_args=[
+            "onboard",
+            "--config",
+            get_container_config_path(),
+            "--workspace",
+            get_container_workspace_path(),
+            "--name",
+            instance.name,
+            *(["--wizard"] if wizard else []),
+        ],
     )
-    _run_instance_command(command, dry_run=dry_run)
+    raise typer.Exit(_run_instance_command(command, dry_run=dry_run))
 
 
 @instance_app.command(
@@ -543,6 +755,12 @@ def instance_agent(
         "--base-dir",
         help="Root directory for named instances (defaults to ~/.nanobot/instances)",
     ),
+    image: str | None = typer.Option(
+        None,
+        "--image",
+        envvar="NANOCHRIS_DOCKER_IMAGE",
+        help="Docker image to run (defaults to $NANOCHRIS_DOCKER_IMAGE or nanochris:local)",
+    ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
@@ -552,12 +770,23 @@ def instance_agent(
     """Run `nanobot agent` for a named bot instance."""
     instance = resolve_instance_paths(name, base_dir=base_dir)
     _print_instance_summary(instance)
-    command = build_instance_command(
+    console.print(f"[dim]Container:[/dim] {get_instance_container_name(instance)}")
+    console.print(f"[dim]Image:[/dim] {get_instance_image(image)}")
+    command = build_docker_instance_command(
         instance,
-        python_executable=sys.executable,
-        command=["agent", *ctx.args],
+        image=image,
+        interactive=True,
+        remove=True,
+        nanobot_args=[
+            "agent",
+            *ctx.args,
+            "--config",
+            get_container_config_path(),
+            "--workspace",
+            get_container_workspace_path(),
+        ],
     )
-    _run_instance_command(command, dry_run=dry_run)
+    raise typer.Exit(_run_instance_command(command, dry_run=dry_run))
 
 
 @instance_app.command(
@@ -572,6 +801,22 @@ def instance_gateway(
         "--base-dir",
         help="Root directory for named instances (defaults to ~/.nanobot/instances)",
     ),
+    image: str | None = typer.Option(
+        None,
+        "--image",
+        envvar="NANOCHRIS_DOCKER_IMAGE",
+        help="Docker image to run (defaults to $NANOCHRIS_DOCKER_IMAGE or nanochris:local)",
+    ),
+    host_port: int = typer.Option(
+        18790,
+        "--host-port",
+        help="Host port that maps to the gateway port inside the container",
+    ),
+    replace: bool = typer.Option(
+        False,
+        "--replace",
+        help="Stop and remove any existing container for this instance before starting",
+    ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
@@ -581,12 +826,31 @@ def instance_gateway(
     """Run `nanobot gateway` for a named bot instance."""
     instance = resolve_instance_paths(name, base_dir=base_dir)
     _print_instance_summary(instance)
-    command = build_instance_command(
+    console.print(f"[dim]Container:[/dim] {get_instance_container_name(instance)}")
+    console.print(f"[dim]Image:[/dim] {get_instance_image(image)}")
+    if replace:
+        remove_command = build_docker_remove_command(instance)
+        remove_code = _run_instance_command(remove_command, dry_run=dry_run)
+        if remove_code != 0 and not dry_run:
+            raise typer.Exit(remove_code)
+
+    command = build_docker_instance_command(
         instance,
-        python_executable=sys.executable,
-        command=["gateway", *ctx.args],
+        image=image,
+        interactive=False,
+        remove=False,
+        detached=True,
+        host_port=host_port,
+        nanobot_args=[
+            "gateway",
+            *ctx.args,
+            "--config",
+            get_container_config_path(),
+            "--workspace",
+            get_container_workspace_path(),
+        ],
     )
-    _run_instance_command(command, dry_run=dry_run)
+    raise typer.Exit(_run_instance_command(command, dry_run=dry_run))
 
 
 @instance_app.command(
@@ -601,6 +865,12 @@ def instance_run(
         "--base-dir",
         help="Root directory for named instances (defaults to ~/.nanobot/instances)",
     ),
+    image: str | None = typer.Option(
+        None,
+        "--image",
+        envvar="NANOCHRIS_DOCKER_IMAGE",
+        help="Docker image to run (defaults to $NANOCHRIS_DOCKER_IMAGE or nanochris:local)",
+    ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
@@ -610,13 +880,72 @@ def instance_run(
     """Run any nanobot command for a named bot instance."""
     instance = resolve_instance_paths(name, base_dir=base_dir)
     _print_instance_summary(instance)
+    console.print(f"[dim]Container:[/dim] {get_instance_container_name(instance)}")
+    console.print(f"[dim]Image:[/dim] {get_instance_image(image)}")
     command_args = list(ctx.args) or ["agent"]
-    command = build_instance_command(
+    command = build_docker_instance_command(
         instance,
-        python_executable=sys.executable,
-        command=command_args,
+        image=image,
+        interactive=True,
+        remove=True,
+        nanobot_args=[
+            *command_args,
+            "--config",
+            get_container_config_path(),
+            "--workspace",
+            get_container_workspace_path(),
+        ],
     )
-    _run_instance_command(command, dry_run=dry_run)
+    raise typer.Exit(_run_instance_command(command, dry_run=dry_run))
+
+
+@instance_app.command("down")
+def instance_down(
+    name: str = typer.Argument(..., help="Display name or slug for the bot instance"),
+    base_dir: str | None = typer.Option(
+        None,
+        "--base-dir",
+        help="Root directory for named instances (defaults to ~/.nanobot/instances)",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Print the resolved command without running it",
+    ),
+):
+    """Stop and remove the Docker container for a named bot instance."""
+    instance = resolve_instance_paths(name, base_dir=base_dir)
+    _print_instance_summary(instance)
+    console.print(f"[dim]Container:[/dim] {get_instance_container_name(instance)}")
+    command = build_docker_remove_command(instance)
+    raise typer.Exit(_run_instance_command(command, dry_run=dry_run))
+
+
+@instance_app.command("logs")
+def instance_logs(
+    name: str = typer.Argument(..., help="Display name or slug for the bot instance"),
+    base_dir: str | None = typer.Option(
+        None,
+        "--base-dir",
+        help="Root directory for named instances (defaults to ~/.nanobot/instances)",
+    ),
+    follow: bool = typer.Option(
+        True,
+        "--follow/--no-follow",
+        help="Follow logs from the running container",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Print the resolved command without running it",
+    ),
+):
+    """Show Docker logs for a named bot instance."""
+    instance = resolve_instance_paths(name, base_dir=base_dir)
+    _print_instance_summary(instance)
+    console.print(f"[dim]Container:[/dim] {get_instance_container_name(instance)}")
+    command = build_docker_logs_command(instance, follow=follow)
+    raise typer.Exit(_run_instance_command(command, dry_run=dry_run))
 
 
 def _onboard_plugins(config_path: Path) -> None:

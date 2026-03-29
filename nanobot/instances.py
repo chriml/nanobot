@@ -87,6 +87,78 @@ def build_instance_command(
     return [python_executable, "-m", "nanobot", *resolved_command]
 
 
+def get_instance_container_name(instance: InstancePaths) -> str:
+    """Return the default Docker container name for an instance."""
+    return f"nanochris-{instance.slug}"
+
+
+def get_instance_image(image: str | None = None) -> str:
+    """Return the Docker image used for per-instance containers."""
+    return image or os.environ.get("NANOCHRIS_DOCKER_IMAGE") or "nanochris:local"
+
+
+def get_container_config_path() -> str:
+    """Return the config path used inside a per-instance container."""
+    return "/root/.nanobot/config.json"
+
+
+def get_container_workspace_path() -> str:
+    """Return the workspace path used inside a per-instance container."""
+    return "/root/.nanobot/workspace"
+
+
+def build_docker_instance_command(
+    instance: InstancePaths,
+    *,
+    image: str | None,
+    nanobot_args: list[str],
+    interactive: bool = False,
+    remove: bool = True,
+    detached: bool = False,
+    host_port: int | None = None,
+    container_name: str | None = None,
+) -> list[str]:
+    """Build a Docker command for an isolated instance container."""
+    command = ["docker", "run"]
+    if interactive:
+        command.append("-it")
+    if remove:
+        command.append("--rm")
+    if detached:
+        command.append("-d")
+
+    resolved_name = container_name or get_instance_container_name(instance)
+    if resolved_name and not remove:
+        command.extend(["--name", resolved_name])
+
+    command.extend(
+        [
+            "-v",
+            f"{instance.root.expanduser().resolve(strict=False)}:/root/.nanobot",
+        ]
+    )
+    if host_port is not None:
+        command.extend(["-p", f"{host_port}:18790"])
+
+    command.append(get_instance_image(image))
+    command.extend(nanobot_args)
+    return command
+
+
+def build_docker_remove_command(instance: InstancePaths) -> list[str]:
+    """Build a command that stops and removes an instance container."""
+    return ["docker", "rm", "-f", get_instance_container_name(instance)]
+
+
+def build_docker_logs_command(instance: InstancePaths, *, follow: bool = True) -> list[str]:
+    """Build a command that shows logs for an instance container."""
+    command = ["docker", "logs"]
+    if follow:
+        command.append("-f")
+    command.append(get_instance_container_name(instance))
+    return command
+
+
 def list_instances(base_dir: str | Path | None = None) -> list[InstancePaths]:
     """Return discovered named instances from the instances directory."""
     instances_dir = get_instances_dir(base_dir)

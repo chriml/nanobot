@@ -1423,20 +1423,32 @@ If you want each instance to have its own dedicated workspace from the start, pa
 If you want the shortest installed flow:
 
 ```bash
+docker build -t nanochris:local .
 nanochris newbot "Chris"
 ```
 
-`newbot` creates `~/.nanobot/instances/chris/` and launches onboarding immediately.
+`newbot` creates `~/.nanobot/instances/chris/` and launches onboarding immediately inside an isolated Docker container for that instance.
+
+You can preseed config defaults before onboarding. For example, enable Telegram and default to OpenAI Codex GPT-5.2:
+
+```bash
+nanochris newbot "Chris" --preset telegram --preset openai-codex-gpt-5.2
+```
 
 After that, keep everything under the installed CLI:
 
 ```bash
-nanochris instance -h
-nanochris instance list
-nanochris instance show "Chris"
-nanochris instance agent "Chris"
-nanochris instance gateway "Chris"
-nanochris instance onboard "Chris"
+nanochris manage "Chris" onboard
+nanochris manage "Chris" config
+nanochris manage "Chris" start
+nanochris manage "Chris" stop
+nanochris manage "Chris" logs
+```
+
+You can also apply presets when re-running onboarding:
+
+```bash
+nanochris manage "Chris" --preset telegram --preset openai-codex-gpt-5.2 onboard
 ```
 
 If you prefer repo-local helpers before installing, use the included scripts:
