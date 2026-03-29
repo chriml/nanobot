@@ -4,6 +4,7 @@ from nanobot.instances import (
     build_instance_command,
     build_onboard_command,
     get_instances_dir,
+    list_instances,
     resolve_instance_paths,
 )
 
@@ -91,3 +92,30 @@ def test_build_instance_command_does_not_duplicate_flags(tmp_path: Path) -> None
         "--workspace",
         "/tmp/custom-workspace",
     ]
+
+
+def test_list_instances_reads_name_from_config(tmp_path: Path) -> None:
+    root = tmp_path / "chris"
+    root.mkdir(parents=True)
+    (root / "config.json").write_text(
+        '{"agents": {"defaults": {"name": "Chris"}}}',
+        encoding="utf-8",
+    )
+
+    instances = list_instances(tmp_path)
+
+    assert len(instances) == 1
+    assert instances[0].slug == "chris"
+    assert instances[0].name == "Chris"
+    assert instances[0].config_path == root / "config.json"
+
+
+def test_list_instances_falls_back_to_slug_without_config(tmp_path: Path) -> None:
+    root = tmp_path / "demo"
+    root.mkdir(parents=True)
+
+    instances = list_instances(tmp_path)
+
+    assert len(instances) == 1
+    assert instances[0].slug == "demo"
+    assert instances[0].name == "demo"

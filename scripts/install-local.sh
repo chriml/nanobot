@@ -56,7 +56,7 @@ PY
 then
   INSTALL_ARGS=(-e "$ROOT_DIR")
 else
-  INSTALL_ARGS=(--user -e "$ROOT_DIR")
+  INSTALL_ARGS=(--user --break-system-packages -e "$ROOT_DIR")
 fi
 
 echo "Installing nanobot from $ROOT_DIR"
@@ -79,7 +79,6 @@ echo
 echo "Installed commands:"
 echo "  nanobot"
 echo "  nanochris"
-echo "  nanchris"
 echo
 echo "If your shell cannot find them yet, add this to your PATH:"
 echo "  export PATH=\"$BIN_DIR:\$PATH\""

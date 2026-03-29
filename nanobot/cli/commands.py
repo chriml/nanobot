@@ -1,6 +1,7 @@
 """CLI commands for nanobot."""
 
 import asyncio
+import subprocess
 from contextlib import contextmanager, nullcontext
 
 import os
@@ -34,7 +35,12 @@ from rich.text import Text
 
 from nanobot import __logo__, __version__
 from nanobot.cli.stream import StreamRenderer, ThinkingSpinner
-from nanobot.instances import resolve_instance_paths
+from nanobot.instances import (
+    build_instance_command,
+    build_onboard_command,
+    list_instances,
+    resolve_instance_paths,
+)
 from nanobot.config.paths import (
     get_agent_workspace_path,
     get_workspace_path,
@@ -424,6 +430,22 @@ def newbot(
     )
 
 
+def _print_instance_summary(instance) -> None:
+    """Print a named instance summary."""
+    console.print(f"[dim]Instance:[/dim] {instance.name} ({instance.slug})")
+    console.print(f"[dim]Root:[/dim] {instance.root}")
+    console.print(f"[dim]Config:[/dim] {instance.config_path}")
+    console.print(f"[dim]Workspace:[/dim] {instance.workspace_path}")
+
+
+def _run_instance_command(command: list[str], *, dry_run: bool) -> None:
+    """Print and optionally execute a resolved instance command."""
+    console.print(f"[dim]Command:[/dim] {' '.join(command)}")
+    if dry_run:
+        return
+    raise typer.Exit(subprocess.run(command, check=False).returncode)
+
+
 def _merge_missing_defaults(existing: Any, defaults: Any) -> Any:
     """Recursively fill in missing values from defaults without overwriting user config."""
     if not isinstance(existing, dict) or not isinstance(defaults, dict):
@@ -436,6 +458,165 @@ def _merge_missing_defaults(existing: Any, defaults: Any) -> Any:
         else:
             merged[key] = _merge_missing_defaults(merged[key], value)
     return merged
+
+
+instance_app = typer.Typer(help="Manage named bot instances")
+app.add_typer(instance_app, name="instance")
+
+
+@instance_app.command("list")
+def instance_list(
+    base_dir: str | None = typer.Option(
+        None,
+        "--base-dir",
+        help="Root directory for named instances (defaults to ~/.nanobot/instances)",
+    ),
+):
+    """List discovered named bot instances."""
+    instances = list_instances(base_dir=base_dir)
+    if not instances:
+        console.print("[dim]No instances found.[/dim]")
+        return
+
+    table = Table(title="Named Instances")
+    table.add_column("Slug", style="cyan")
+    table.add_column("Name", style="green")
+    table.add_column("Config", style="magenta")
+    for instance in instances:
+        table.add_row(instance.slug, instance.name, str(instance.config_path))
+    console.print(table)
+
+
+@instance_app.command("show")
+def instance_show(
+    name: str = typer.Argument(..., help="Display name or slug for the bot instance"),
+    base_dir: str | None = typer.Option(
+        None,
+        "--base-dir",
+        help="Root directory for named instances (defaults to ~/.nanobot/instances)",
+    ),
+):
+    """Show resolved paths for a named bot instance."""
+    instance = resolve_instance_paths(name, base_dir=base_dir)
+    _print_instance_summary(instance)
+
+
+@instance_app.command("onboard")
+def instance_onboard(
+    name: str = typer.Argument(..., help="Display name or slug for the bot instance"),
+    base_dir: str | None = typer.Option(
+        None,
+        "--base-dir",
+        help="Root directory for named instances (defaults to ~/.nanobot/instances)",
+    ),
+    wizard: bool = typer.Option(
+        True,
+        "--wizard/--no-wizard",
+        help="Run the interactive onboarding wizard immediately",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Print the resolved command without running it",
+    ),
+):
+    """Run onboarding for a named bot instance."""
+    instance = resolve_instance_paths(name, base_dir=base_dir)
+    _print_instance_summary(instance)
+    command = build_onboard_command(
+        instance,
+        python_executable=sys.executable,
+        wizard=wizard,
+    )
+    _run_instance_command(command, dry_run=dry_run)
+
+
+@instance_app.command(
+    "agent",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
+def instance_agent(
+    ctx: typer.Context,
+    name: str = typer.Argument(..., help="Display name or slug for the bot instance"),
+    base_dir: str | None = typer.Option(
+        None,
+        "--base-dir",
+        help="Root directory for named instances (defaults to ~/.nanobot/instances)",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Print the resolved command without running it",
+    ),
+):
+    """Run `nanobot agent` for a named bot instance."""
+    instance = resolve_instance_paths(name, base_dir=base_dir)
+    _print_instance_summary(instance)
+    command = build_instance_command(
+        instance,
+        python_executable=sys.executable,
+        command=["agent", *ctx.args],
+    )
+    _run_instance_command(command, dry_run=dry_run)
+
+
+@instance_app.command(
+    "gateway",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
+def instance_gateway(
+    ctx: typer.Context,
+    name: str = typer.Argument(..., help="Display name or slug for the bot instance"),
+    base_dir: str | None = typer.Option(
+        None,
+        "--base-dir",
+        help="Root directory for named instances (defaults to ~/.nanobot/instances)",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Print the resolved command without running it",
+    ),
+):
+    """Run `nanobot gateway` for a named bot instance."""
+    instance = resolve_instance_paths(name, base_dir=base_dir)
+    _print_instance_summary(instance)
+    command = build_instance_command(
+        instance,
+        python_executable=sys.executable,
+        command=["gateway", *ctx.args],
+    )
+    _run_instance_command(command, dry_run=dry_run)
+
+
+@instance_app.command(
+    "run",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
+def instance_run(
+    ctx: typer.Context,
+    name: str = typer.Argument(..., help="Display name or slug for the bot instance"),
+    base_dir: str | None = typer.Option(
+        None,
+        "--base-dir",
+        help="Root directory for named instances (defaults to ~/.nanobot/instances)",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Print the resolved command without running it",
+    ),
+):
+    """Run any nanobot command for a named bot instance."""
+    instance = resolve_instance_paths(name, base_dir=base_dir)
+    _print_instance_summary(instance)
+    command_args = list(ctx.args) or ["agent"]
+    command = build_instance_command(
+        instance,
+        python_executable=sys.executable,
+        command=command_args,
+    )
+    _run_instance_command(command, dry_run=dry_run)
 
 
 def _onboard_plugins(config_path: Path) -> None:

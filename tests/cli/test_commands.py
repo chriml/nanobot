@@ -280,6 +280,79 @@ def test_newbot_can_disable_wizard(tmp_path, monkeypatch):
     assert seen["wizard"] is False
 
 
+def test_instance_help_shows_management_commands():
+    result = runner.invoke(app, ["instance", "--help"])
+
+    assert result.exit_code == 0
+    stripped_output = _strip_ansi(result.stdout)
+    assert "list" in stripped_output
+    assert "show" in stripped_output
+    assert "onboard" in stripped_output
+    assert "agent" in stripped_output
+    assert "gateway" in stripped_output
+    assert "run" in stripped_output
+
+
+def test_instance_show_resolves_named_paths(tmp_path):
+    result = runner.invoke(
+        app,
+        ["instance", "show", "Chris", "--base-dir", str(tmp_path)],
+    )
+
+    assert result.exit_code == 0
+    stripped_output = _strip_ansi(result.stdout)
+    instance = resolve_instance_paths("Chris", base_dir=tmp_path)
+    assert str(instance.config_path) in stripped_output
+    assert str(instance.workspace_path) in stripped_output
+
+
+def test_instance_onboard_dry_run_uses_named_instance(tmp_path):
+    result = runner.invoke(
+        app,
+        ["instance", "onboard", "Chris", "--base-dir", str(tmp_path), "--dry-run"],
+    )
+
+    assert result.exit_code == 0
+    stripped_output = _strip_ansi(result.stdout)
+    instance = resolve_instance_paths("Chris", base_dir=tmp_path)
+    assert str(instance.config_path) in stripped_output
+    assert str(instance.workspace_path) in stripped_output
+    assert "--wizard" in stripped_output
+
+
+def test_instance_agent_dry_run_passes_through_args(tmp_path):
+    result = runner.invoke(
+        app,
+        ["instance", "agent", "Chris", "--base-dir", str(tmp_path), "--dry-run", "-m", "Hello"],
+    )
+
+    assert result.exit_code == 0
+    stripped_output = _strip_ansi(result.stdout)
+    instance = resolve_instance_paths("Chris", base_dir=tmp_path)
+    assert f"--config {instance.config_path}" in stripped_output
+    assert f"--workspace {instance.workspace_path}" in stripped_output
+    assert "agent -m Hello" in stripped_output
+
+
+def test_instance_list_reads_existing_instances(tmp_path):
+    instance = resolve_instance_paths("Chris", base_dir=tmp_path)
+    instance.root.mkdir(parents=True)
+    instance.config_path.write_text(
+        '{"agents": {"defaults": {"name": "Chris"}}}',
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        ["instance", "list", "--base-dir", str(tmp_path)],
+    )
+
+    assert result.exit_code == 0
+    stripped_output = _strip_ansi(result.stdout)
+    assert "chris" in stripped_output
+    assert "Chris" in stripped_output
+
+
 def test_config_matches_github_copilot_codex_with_hyphen_prefix():
     config = Config()
     config.agents.defaults.model = "github-copilot/gpt-5.3-codex"
