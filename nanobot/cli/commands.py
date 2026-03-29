@@ -34,6 +34,7 @@ from rich.text import Text
 
 from nanobot import __logo__, __version__
 from nanobot.cli.stream import StreamRenderer, ThinkingSpinner
+from nanobot.instances import resolve_instance_paths
 from nanobot.config.paths import (
     get_agent_workspace_path,
     get_workspace_path,
@@ -394,6 +395,33 @@ def onboard(
         console.print("     Get one at: https://openrouter.ai/keys")
         console.print(f"  2. Chat: [cyan]{agent_cmd}[/cyan]")
     console.print("\n[dim]Want Telegram/WhatsApp? See: https://github.com/HKUDS/nanobot#-chat-apps[/dim]")
+
+
+@app.command()
+def newbot(
+    name: str = typer.Argument(..., help="Display name for the bot instance"),
+    base_dir: str | None = typer.Option(
+        None,
+        "--base-dir",
+        help="Root directory for named instances (defaults to ~/.nanobot/instances)",
+    ),
+    wizard: bool = typer.Option(
+        True,
+        "--wizard/--no-wizard",
+        help="Run the interactive onboarding wizard immediately",
+    ),
+):
+    """Create a named bot instance and run onboarding for it."""
+    instance = resolve_instance_paths(name, base_dir=base_dir)
+    console.print(f"[dim]Instance:[/dim] {instance.name} ({instance.slug})")
+    console.print(f"[dim]Config:[/dim] {instance.config_path}")
+    console.print(f"[dim]Workspace:[/dim] {instance.workspace_path}")
+    onboard(
+        workspace=str(instance.workspace_path),
+        config=str(instance.config_path),
+        name=instance.name,
+        wizard=wizard,
+    )
 
 
 def _merge_missing_defaults(existing: Any, defaults: Any) -> Any:

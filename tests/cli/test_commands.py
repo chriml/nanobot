@@ -10,6 +10,7 @@ from nanobot.bus.events import OutboundMessage
 from nanobot.cli.commands import _make_provider, app
 from nanobot.config.paths import get_agent_workspace_path
 from nanobot.config.schema import Config
+from nanobot.instances import resolve_instance_paths
 from nanobot.providers.openai_codex_provider import _strip_model_prefix
 from nanobot.providers.registry import find_by_name
 
@@ -221,6 +222,62 @@ def test_onboard_wizard_preserves_explicit_config_in_next_steps(tmp_path, monkey
     resolved_config = str(config_path.resolve())
     assert f'nanobot agent -m "Hello!" --config {resolved_config}' in compact_output
     assert f"nanobot gateway --config {resolved_config}" in compact_output
+
+
+def test_newbot_help_shows_base_dir_and_wizard_options():
+    result = runner.invoke(app, ["newbot", "--help"])
+
+    assert result.exit_code == 0
+    stripped_output = _strip_ansi(result.stdout)
+    assert "--base-dir" in stripped_output
+    assert "--wizard" in stripped_output
+    assert "--no-wizard" in stripped_output
+
+
+def test_newbot_runs_onboard_for_named_instance(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake_onboard(*, workspace, config, name, wizard):
+        seen["workspace"] = workspace
+        seen["config"] = config
+        seen["name"] = name
+        seen["wizard"] = wizard
+
+    monkeypatch.setattr("nanobot.cli.commands.onboard", fake_onboard)
+
+    result = runner.invoke(
+        app,
+        ["newbot", "Chris", "--base-dir", str(tmp_path)],
+    )
+
+    assert result.exit_code == 0
+    instance = resolve_instance_paths("Chris", base_dir=tmp_path)
+    assert seen == {
+        "workspace": str(instance.workspace_path),
+        "config": str(instance.config_path),
+        "name": "Chris",
+        "wizard": True,
+    }
+    stripped_output = _strip_ansi(result.stdout)
+    assert str(instance.config_path) in stripped_output
+    assert str(instance.workspace_path) in stripped_output
+
+
+def test_newbot_can_disable_wizard(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake_onboard(*, workspace, config, name, wizard):
+        seen["wizard"] = wizard
+
+    monkeypatch.setattr("nanobot.cli.commands.onboard", fake_onboard)
+
+    result = runner.invoke(
+        app,
+        ["newbot", "Chris", "--base-dir", str(tmp_path), "--no-wizard"],
+    )
+
+    assert result.exit_code == 0
+    assert seen["wizard"] is False
 
 
 def test_config_matches_github_copilot_codex_with_hyphen_prefix():

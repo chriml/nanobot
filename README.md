@@ -154,6 +154,8 @@ cd nanobot
 pip install -e .
 ```
 
+This also installs `nanochris` and `nanchris` CLI aliases alongside `nanobot`.
+
 **Install with [uv](https://github.com/astral-sh/uv)** (stable, fast)
 
 ```bash
@@ -1417,6 +1419,25 @@ Run multiple nanobot instances simultaneously with separate configs and runtime 
 ### Quick Start
 
 If you want each instance to have its own dedicated workspace from the start, pass both `--config` and `--workspace` during onboarding.
+
+If you want the shortest installed flow:
+
+```bash
+nanochris newbot "Chris"
+```
+
+`newbot` creates `~/.nanobot/instances/chris/` and launches onboarding immediately. The `nanchris` alias works too if that is the command name you prefer.
+
+If you prefer repo-local helpers before installing, use the included scripts:
+
+```bash
+./scripts/new-bot.py "Nano Chris"
+./scripts/run-bot.py "Nano Chris" gateway
+./scripts/run-bot.py "Nano Chris" agent -m "Hello"
+./scripts/install-local.sh
+```
+
+By default these scripts keep each instance under `~/.nanobot/instances/<slug>/`. Set `NANOBOT_INSTANCES_DIR` or pass `--base-dir` if you want a different root.
 
 **Initialize instances:**
 
