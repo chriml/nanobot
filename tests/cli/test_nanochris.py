@@ -74,8 +74,14 @@ def test_nanochris_manage_main_actions(tmp_path):
     assert '"openai"' in _strip_ansi(config_result.stdout)
 
     assert start_result.exit_code == 0
+    assert "docker network create nanochris-net" in _strip_ansi(start_result.stdout)
+    assert "docker run -d --name nanochris-searxng --network nanochris-net" in _strip_ansi(start_result.stdout)
     assert "docker run -d --name nanochris-chris" in _strip_ansi(start_result.stdout)
+    assert "--network nanochris-net" in _strip_ansi(start_result.stdout)
     assert "/root/.local/share/oauth-cli-kit" in _strip_ansi(start_result.stdout)
+    assert "/root/.cache/whisper" in _strip_ansi(start_result.stdout)
+    assert "host.docker.internal:host-gateway" in _strip_ansi(start_result.stdout)
+    assert "NANOBOT_TOOLS__WEB__SEARCH__BASE_URL=http://nanochris-searxng:8080" in _strip_ansi(start_result.stdout)
 
     assert stop_result.exit_code == 0
     assert "docker rm -f nanochris-chris" in _strip_ansi(stop_result.stdout)
@@ -92,8 +98,12 @@ def test_nanochris_manage_login_codex_dry_run(tmp_path):
 
     assert result.exit_code == 0
     stripped_output = _strip_ansi(result.stdout)
+    assert "docker network create nanochris-net" in stripped_output
     assert "provider login openai-codex" in stripped_output
     assert "/root/.local/share/oauth-cli-kit" in stripped_output
+    assert "/root/.cache/whisper" in stripped_output
+    assert "--network nanochris-net" in stripped_output
+    assert "host.docker.internal:host-gateway" in stripped_output
 
 
 def test_nanochris_manage_login_claude_saves_config(tmp_path):

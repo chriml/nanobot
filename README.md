@@ -1428,6 +1428,7 @@ nanochris newbot "Chris"
 ```
 
 `newbot` creates `~/.nanobot/instances/chris/` and launches onboarding immediately inside an isolated Docker container for that instance.
+`nanochris` also manages a shared Docker search backend for local SearXNG. `start` will ensure the shared `nanochris-searxng` container is running on the `nanochris-net` network.
 
 You can preseed config defaults before onboarding. For example, enable Telegram and default to OpenAI Codex GPT-5.2:
 
@@ -1451,6 +1452,12 @@ You can also apply presets when re-running onboarding:
 
 ```bash
 nanochris manage "Chris" --preset telegram --preset openai-codex-gpt-5.2 onboard
+```
+
+If you want the instance to use the bundled SearXNG backend for `web_search`, apply the local stack preset:
+
+```bash
+nanochris newbot "Chris" --preset local-stack
 ```
 
 If you prefer repo-local helpers before installing, use the included scripts:

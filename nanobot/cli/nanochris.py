@@ -21,6 +21,9 @@ from nanobot.instances import (
     get_container_workspace_path,
     get_instance_container_name,
     get_instance_image,
+    get_nanochris_network_name,
+    get_searxng_container_name,
+    get_searxng_image,
     resolve_instance_paths,
 )
 
@@ -93,6 +96,125 @@ def _oauth_volume_mount() -> str:
     return f"{oauth_dir.expanduser().resolve(strict=False)}:/root/.local/share/oauth-cli-kit"
 
 
+def _whisper_cache_host_dir() -> Path:
+    return Path.home() / ".cache" / "whisper"
+
+
+def _whisper_cache_volume_mount() -> str:
+    cache_dir = _whisper_cache_host_dir()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return f"{cache_dir.expanduser().resolve(strict=False)}:/root/.cache/whisper"
+
+
+def _shared_service_dir() -> Path:
+    path = Path.home() / ".nanobot" / "services"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _searxng_settings_path() -> Path:
+    settings_dir = _shared_service_dir() / "searxng"
+    settings_dir.mkdir(parents=True, exist_ok=True)
+    settings_path = settings_dir / "settings.yml"
+    settings_path.write_text(
+        """use_default_settings: true
+
+general:
+  instance_name: "nanochris searxng"
+
+search:
+  formats:
+    - html
+    - json
+
+server:
+  secret_key: "nanochris-searxng-change-me"
+""",
+        encoding="utf-8",
+    )
+    return settings_path
+
+
+def _searxng_volume_mount() -> str:
+    settings_path = _searxng_settings_path()
+    return f"{settings_path.expanduser().resolve(strict=False)}:/etc/searxng/settings.yml:ro"
+
+
+def _shared_search_base_url() -> str:
+    return f"http://{get_searxng_container_name()}:8080"
+
+
+def _shared_runtime_env() -> dict[str, str]:
+    return {
+        "NANOBOT_TOOLS__WEB__SEARCH__BASE_URL": _shared_search_base_url(),
+    }
+
+
+def _ensure_nanochris_network(*, dry_run: bool) -> int:
+    network = get_nanochris_network_name()
+    if dry_run:
+        return _run_command(["docker", "network", "create", network], dry_run=True)
+    inspect = subprocess.run(
+        ["docker", "network", "inspect", network],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    if inspect.returncode == 0:
+        return 0
+    return _run_command(["docker", "network", "create", network], dry_run=dry_run)
+
+
+def _ensure_searxng_container(*, dry_run: bool) -> int:
+    name = get_searxng_container_name()
+    if dry_run:
+        _run_command(["docker", "rm", "-f", name], dry_run=True)
+        return _run_command(
+            [
+                "docker",
+                "run",
+                "-d",
+                "--name",
+                name,
+                "--network",
+                get_nanochris_network_name(),
+                "-v",
+                _searxng_volume_mount(),
+                get_searxng_image(),
+            ],
+            dry_run=True,
+        )
+    running = subprocess.run(
+        ["docker", "inspect", "-f", "{{.State.Running}}", name],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    if running.returncode == 0 and running.stdout.strip() == "true":
+        return 0
+
+    remove = ["docker", "rm", "-f", name]
+    if dry_run:
+        console.print(f"[dim]Command:[/dim] {' '.join(remove)}")
+    else:
+        subprocess.run(remove, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    command = [
+        "docker",
+        "run",
+        "-d",
+        "--name",
+        name,
+        "--network",
+        get_nanochris_network_name(),
+        "-v",
+        _searxng_volume_mount(),
+        get_searxng_image(),
+    ]
+    return _run_command(command, dry_run=dry_run)
+
+
 @app.command()
 def newbot(
     name: str = typer.Argument(..., help="Display name for the bot instance"),
@@ -127,6 +249,10 @@ def newbot(
     instance = resolve_instance_paths(name, base_dir=base_dir)
     if preset:
         apply_presets(instance.config_path, preset)
+    if _ensure_nanochris_network(dry_run=dry_run) != 0:
+        raise typer.Exit(1)
+    if _ensure_searxng_container(dry_run=dry_run) != 0:
+        raise typer.Exit(1)
     _print_instance_summary(instance)
     console.print(f"[dim]Container:[/dim] {get_instance_container_name(instance)}")
     console.print(f"[dim]Image:[/dim] {get_instance_image(image)}")
@@ -135,6 +261,10 @@ def newbot(
         image=image,
         interactive=True,
         remove=True,
+        volume_mounts=[_whisper_cache_volume_mount()],
+        extra_hosts=["host.docker.internal:host-gateway"],
+        environment=_shared_runtime_env(),
+        network=get_nanochris_network_name(),
         nanobot_args=[
             "onboard",
             "--config",
@@ -205,11 +335,19 @@ def manage(
         if preset:
             apply_presets(instance.config_path, preset)
         wizard = "--no-wizard" not in extra
+        if _ensure_nanochris_network(dry_run=dry_run) != 0:
+            raise typer.Exit(1)
+        if _ensure_searxng_container(dry_run=dry_run) != 0:
+            raise typer.Exit(1)
         command = build_docker_instance_command(
             instance,
             image=image,
             interactive=True,
             remove=True,
+            volume_mounts=[_whisper_cache_volume_mount()],
+            extra_hosts=["host.docker.internal:host-gateway"],
+            environment=_shared_runtime_env(),
+            network=get_nanochris_network_name(),
             nanobot_args=[
                 "onboard",
                 "--config",
@@ -224,6 +362,10 @@ def manage(
         raise typer.Exit(_run_command(command, dry_run=dry_run))
 
     if action == "start":
+        if _ensure_nanochris_network(dry_run=dry_run) != 0:
+            raise typer.Exit(1)
+        if _ensure_searxng_container(dry_run=dry_run) != 0:
+            raise typer.Exit(1)
         command = build_docker_instance_command(
             instance,
             image=image,
@@ -231,7 +373,10 @@ def manage(
             remove=False,
             detached=True,
             host_port=host_port,
-            volume_mounts=[_oauth_volume_mount()],
+            volume_mounts=[_oauth_volume_mount(), _whisper_cache_volume_mount()],
+            extra_hosts=["host.docker.internal:host-gateway"],
+            environment=_shared_runtime_env(),
+            network=get_nanochris_network_name(),
             nanobot_args=[
                 "gateway",
                 *extra,
@@ -259,6 +404,8 @@ def manage(
 
         target = extra[0].lower()
         if target == "codex":
+            if _ensure_nanochris_network(dry_run=dry_run) != 0:
+                raise typer.Exit(1)
             command = [
                 "docker",
                 "run",
@@ -268,6 +415,14 @@ def manage(
                 f"{instance.root.expanduser().resolve(strict=False)}:/root/.nanobot",
                 "-v",
                 _oauth_volume_mount(),
+                "-v",
+                _whisper_cache_volume_mount(),
+                "--network",
+                get_nanochris_network_name(),
+                "--add-host",
+                "host.docker.internal:host-gateway",
+                "-e",
+                f"NANOBOT_TOOLS__WEB__SEARCH__BASE_URL={_shared_search_base_url()}",
                 get_instance_image(image),
                 "provider",
                 "login",

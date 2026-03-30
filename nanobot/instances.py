@@ -92,6 +92,21 @@ def get_instance_container_name(instance: InstancePaths) -> str:
     return f"nanochris-{instance.slug}"
 
 
+def get_nanochris_network_name() -> str:
+    """Return the shared Docker network name for nanochris services."""
+    return "nanochris-net"
+
+
+def get_searxng_container_name() -> str:
+    """Return the shared Docker container name for the SearXNG service."""
+    return "nanochris-searxng"
+
+
+def get_searxng_image(image: str | None = None) -> str:
+    """Return the Docker image used for the shared SearXNG service."""
+    return image or os.environ.get("NANOCHRIS_SEARXNG_IMAGE") or "docker.io/searxng/searxng:latest"
+
+
 def get_instance_image(image: str | None = None) -> str:
     """Return the Docker image used for per-instance containers."""
     return image or os.environ.get("NANOCHRIS_DOCKER_IMAGE") or "nanochris:local"
@@ -118,6 +133,9 @@ def build_docker_instance_command(
     host_port: int | None = None,
     container_name: str | None = None,
     volume_mounts: list[str] | None = None,
+    extra_hosts: list[str] | None = None,
+    environment: dict[str, str] | None = None,
+    network: str | None = None,
 ) -> list[str]:
     """Build a Docker command for an isolated instance container."""
     command = ["docker", "run"]
@@ -131,6 +149,8 @@ def build_docker_instance_command(
     resolved_name = container_name or get_instance_container_name(instance)
     if resolved_name and not remove:
         command.extend(["--name", resolved_name])
+    if network:
+        command.extend(["--network", network])
 
     command.extend(
         [
@@ -140,6 +160,10 @@ def build_docker_instance_command(
     )
     for volume_mount in volume_mounts or []:
         command.extend(["-v", volume_mount])
+    for extra_host in extra_hosts or []:
+        command.extend(["--add-host", extra_host])
+    for key, value in (environment or {}).items():
+        command.extend(["-e", f"{key}={value}"])
     if host_port is not None:
         command.extend(["-p", f"{host_port}:18790"])
 
