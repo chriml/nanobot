@@ -1,6 +1,6 @@
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
-# Local fork overlay: keep upstream Dockerfile untouched and add Whisper support here.
+# Local fork overlay: keep upstream Dockerfile untouched and add Faster-Whisper support here.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl ca-certificates gnupg git ffmpeg openssh-client && \
     mkdir -p /etc/apt/keyrings && \
@@ -22,7 +22,7 @@ RUN mkdir -p nanobot bridge && touch nanobot/__init__.py && \
 COPY nanobot/ nanobot/
 COPY bridge/ bridge/
 RUN uv pip install --system --no-cache . && \
-    uv pip install --system --no-cache openai-whisper
+    uv pip install --system --no-cache faster-whisper
 
 RUN git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
 

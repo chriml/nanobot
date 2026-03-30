@@ -4,57 +4,66 @@ from __future__ import annotations
 
 import asyncio
 import os
-import shlex
-import shutil
-import tempfile
 from pathlib import Path
+from typing import Any
 
 import httpx
 from loguru import logger
 
 
 class LocalWhisperTranscriptionProvider:
-    """Run local Whisper CLI for zero-cost transcription."""
+    """Run local Faster-Whisper for zero-cost transcription."""
 
     def __init__(
         self,
-        command: str | None = None,
         model: str | None = None,
         language: str | None = None,
+        device: str | None = None,
+        compute_type: str | None = None,
+        download_root: str | None = None,
     ):
-        raw_command = command or os.environ.get("NANOBOT_TRANSCRIBE_COMMAND")
-        self.command = self._resolve_command(raw_command)
         self.model = model or os.environ.get("NANOBOT_TRANSCRIBE_MODEL", "base")
         self.language = language or os.environ.get("NANOBOT_TRANSCRIBE_LANGUAGE")
-
-    def _resolve_command(self, raw_command: str | None) -> list[str]:
-        """Pick an explicit command first, then common local defaults."""
-        if raw_command:
-            return shlex.split(raw_command)
-        if shutil.which("whisper"):
-            return ["whisper"]
-
-        repo_python = Path(__file__).resolve().parents[2] / ".venv-whisper" / "bin" / "python"
-        if repo_python.exists():
-            return [str(repo_python), "-m", "whisper"]
-
-        cwd_python = Path.cwd() / ".venv-whisper" / "bin" / "python"
-        if cwd_python.exists():
-            return [str(cwd_python), "-m", "whisper"]
-
-        return ["whisper"]
+        self.device = device or os.environ.get("NANOBOT_TRANSCRIBE_DEVICE", "auto")
+        self.compute_type = compute_type or os.environ.get("NANOBOT_TRANSCRIBE_COMPUTE_TYPE", "int8")
+        self.download_root = str(
+            Path(download_root or os.environ.get("NANOBOT_TRANSCRIBE_DOWNLOAD_ROOT", "~/.cache/whisper"))
+            .expanduser()
+        )
+        self._model_instance: Any | None = None
 
     def is_available(self) -> bool:
-        """Return True when the configured Whisper command is installed."""
-        if not self.command:
+        """Return True when faster-whisper can be imported."""
+        try:
+            import faster_whisper  # noqa: F401
+        except Exception:
             return False
-        executable = Path(self.command[0]).expanduser()
-        if executable.exists():
-            return os.access(executable, os.X_OK)
-        return shutil.which(self.command[0]) is not None
+        return True
+
+    def _get_model(self):
+        if self._model_instance is not None:
+            return self._model_instance
+
+        from faster_whisper import WhisperModel
+
+        self._model_instance = WhisperModel(
+            self.model,
+            device=self.device,
+            compute_type=self.compute_type,
+            download_root=self.download_root,
+        )
+        return self._model_instance
+
+    def _transcribe_sync(self, file_path: Path) -> str:
+        model = self._get_model()
+        kwargs: dict[str, Any] = {"vad_filter": True}
+        if self.language:
+            kwargs["language"] = self.language
+        segments, _info = model.transcribe(str(file_path), **kwargs)
+        return " ".join(segment.text.strip() for segment in segments if segment.text).strip()
 
     async def transcribe(self, file_path: str | Path) -> str:
-        """Transcribe an audio file using the local Whisper CLI."""
+        """Transcribe an audio file using Faster-Whisper."""
         if not self.is_available():
             return ""
 
@@ -63,49 +72,17 @@ class LocalWhisperTranscriptionProvider:
             logger.error("Audio file not found: {}", file_path)
             return ""
 
-        with tempfile.TemporaryDirectory(prefix="nanobot-whisper-") as output_dir:
-            command = [
-                *self.command,
-                str(path),
-                "--model",
-                self.model,
-                "--output_format",
-                "txt",
-                "--output_dir",
-                output_dir,
-                "--fp16",
-                "False",
-            ]
-            if self.language:
-                command.extend(["--language", self.language])
-
-            process = await asyncio.create_subprocess_exec(
-                *command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(self._transcribe_sync, path),
+                timeout=300.0,
             )
-            try:
-                _, stderr = await asyncio.wait_for(process.communicate(), timeout=300.0)
-            except asyncio.TimeoutError:
-                process.kill()
-                await process.communicate()
-                logger.warning("Local Whisper transcription timed out for {}", path.name)
-                return ""
-
-            if process.returncode != 0:
-                logger.warning(
-                    "Local Whisper transcription failed for {}: {}",
-                    path.name,
-                    stderr.decode("utf-8", "ignore").strip(),
-                )
-                return ""
-
-            transcript_path = Path(output_dir) / f"{path.stem}.txt"
-            if not transcript_path.exists():
-                logger.warning("Local Whisper did not produce transcript output for {}", path.name)
-                return ""
-
-            return transcript_path.read_text(encoding="utf-8").strip()
+        except asyncio.TimeoutError:
+            logger.warning("Local Faster-Whisper transcription timed out for {}", path.name)
+            return ""
+        except Exception as e:
+            logger.warning("Local Faster-Whisper transcription failed for {}: {}", path.name, e)
+            return ""
 
 
 class GroqTranscriptionProvider:

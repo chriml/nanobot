@@ -1,6 +1,6 @@
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
-# Install Node.js 20 for the WhatsApp bridge and ffmpeg for local Whisper.
+# Install Node.js 20 for the WhatsApp bridge and ffmpeg for local Faster-Whisper.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl ca-certificates gnupg git ffmpeg openssh-client && \
     mkdir -p /etc/apt/keyrings && \
@@ -24,7 +24,7 @@ RUN mkdir -p nanobot bridge && touch nanobot/__init__.py && \
 COPY nanobot/ nanobot/
 COPY bridge/ bridge/
 RUN uv pip install --system --no-cache . && \
-    uv pip install --system --no-cache openai-whisper
+    uv pip install --system --no-cache faster-whisper
 
 # Build the WhatsApp bridge
 RUN git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
