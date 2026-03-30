@@ -146,6 +146,7 @@ def _shared_search_base_url() -> str:
 
 def _shared_runtime_env() -> dict[str, str]:
     return {
+        "NANOBOT_TOOLS__WEB__SEARCH__PROVIDER": "searxng",
         "NANOBOT_TOOLS__WEB__SEARCH__BASE_URL": _shared_search_base_url(),
     }
 

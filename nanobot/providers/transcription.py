@@ -36,7 +36,8 @@ class LocalWhisperTranscriptionProvider:
         """Return True when faster-whisper can be imported."""
         try:
             import faster_whisper  # noqa: F401
-        except Exception:
+        except Exception as e:
+            logger.warning("Local Faster-Whisper is unavailable: {}", e)
             return False
         return True
 

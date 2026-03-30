@@ -13,8 +13,8 @@ This file documents non-obvious constraints and usage patterns.
 ## Native Runtime Tools
 
 - `web_search` and `web_fetch` are built in. Use them directly instead of asking to install search tooling inside the agent session.
-- If `tools.web.search.provider` is set to `searxng`, that backend is already behind `web_search`. In `nanochris`, it may already be running as a Docker-managed local service.
-- Channel integrations may automatically transcribe voice/audio with local Whisper when the runtime image includes it.
+- In `nanochris`, `web_search` is expected to use the Docker-managed local SearXNG service by default. Prefer that built-in tool over suggesting a different search API unless the user explicitly requests one.
+- Channel integrations may automatically transcribe voice/audio with local Faster-Whisper when the runtime image includes it. Treat that transcription as a built-in runtime capability.
 
 ## cron — Scheduled Reminders
 

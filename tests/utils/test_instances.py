@@ -133,7 +133,10 @@ def test_build_docker_instance_command_supports_extra_mounts_and_hosts(tmp_path:
         remove=False,
         volume_mounts=["/tmp/whisper:/root/.cache/whisper"],
         extra_hosts=["host.docker.internal:host-gateway"],
-        environment={"NANOBOT_TOOLS__WEB__SEARCH__BASE_URL": "http://nanochris-searxng:8080"},
+        environment={
+            "NANOBOT_TOOLS__WEB__SEARCH__PROVIDER": "searxng",
+            "NANOBOT_TOOLS__WEB__SEARCH__BASE_URL": "http://nanochris-searxng:8080",
+        },
         network="nanochris-net",
     )
 
@@ -151,6 +154,8 @@ def test_build_docker_instance_command_supports_extra_mounts_and_hosts(tmp_path:
         "/tmp/whisper:/root/.cache/whisper",
         "--add-host",
         "host.docker.internal:host-gateway",
+        "-e",
+        "NANOBOT_TOOLS__WEB__SEARCH__PROVIDER=searxng",
         "-e",
         "NANOBOT_TOOLS__WEB__SEARCH__BASE_URL=http://nanochris-searxng:8080",
         "nanochris:local",
