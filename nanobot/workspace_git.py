@@ -41,6 +41,7 @@ def bootstrap_workspace_git(
     if not config.enabled or config.provider != "github" or not config.github_token.strip():
         return None
 
+    _ensure_safe_directory(workspace)
     owner = _github_login(config.github_token)
     repo = config.repo.strip() or slugify_agent_name(bot_name) or workspace.name
     clone_url, created_repo = _ensure_github_repo(
@@ -81,6 +82,7 @@ def sync_workspace_repo(
     commit_message: str = DEFAULT_COMMIT_MESSAGE,
 ) -> str:
     """Commit and push workspace changes on a fixed branch."""
+    _ensure_safe_directory(workspace)
     top_level = _git_capture(workspace, "rev-parse", "--show-toplevel", check=False)
     if top_level is None:
         logger.debug("Workspace git sync skipped: workspace is not a git repo")
@@ -278,6 +280,15 @@ def _commit(workspace: Path, *, message: str, bot_name: str) -> None:
     )
 
 
+def _ensure_safe_directory(workspace: Path) -> None:
+    resolved = str(workspace.expanduser().resolve(strict=False))
+    existing = _git_global_capture("config", "--global", "--get-all", "safe.directory")
+    entries = {line.strip() for line in (existing or "").splitlines() if line.strip()}
+    if resolved in entries or "*" in entries:
+        return
+    _git_global("config", "--global", "--add", "safe.directory", resolved)
+
+
 def _prepare_initial_workspace_commit(workspace: Path, *, branch: str, bot_name: str) -> bool:
     """Create the initial branch commit for a fresh dirty repo."""
     if _git_has_commits(workspace) or not _git_is_dirty(workspace):
@@ -383,6 +394,37 @@ def _git(workspace: Path, *args: str) -> None:
     except subprocess.CalledProcessError as exc:
         stderr = (exc.stderr or "").strip()
         logger.error("workspace git command failed: git {}: {}", " ".join(args), stderr or exc.returncode)
+        raise RuntimeError(f"git {' '.join(args)} failed: {stderr or exc.returncode}") from exc
+
+
+def _git_global_capture(*args: str) -> str | None:
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError:
+        return None
+    except FileNotFoundError as exc:
+        raise RuntimeError("git is not installed") from exc
+    return (completed.stdout or "").strip()
+
+
+def _git_global(*args: str) -> None:
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError("git is not installed") from exc
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+        logger.error("git {} failed: {}", " ".join(args), stderr or exc.returncode)
         raise RuntimeError(f"git {' '.join(args)} failed: {stderr or exc.returncode}") from exc
 
 
