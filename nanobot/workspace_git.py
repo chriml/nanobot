@@ -74,6 +74,16 @@ def bootstrap_workspace_git(
     )
 
 
+def prepare_workspace_git_access(workspace: Path) -> None:
+    """Best-effort git safety setup for a runtime workspace."""
+    if not (workspace / ".git").exists():
+        return
+    try:
+        _ensure_safe_directory(workspace)
+    except RuntimeError as exc:
+        logger.warning("Workspace git safety setup skipped for {}: {}", workspace, exc)
+
+
 def sync_workspace_repo(
     workspace: Path,
     *,
@@ -433,5 +443,6 @@ __all__ = [
     "WorkspaceGitBootstrapResult",
     "WorkspaceGitSyncHook",
     "bootstrap_workspace_git",
+    "prepare_workspace_git_access",
     "sync_workspace_repo",
 ]

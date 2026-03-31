@@ -54,7 +54,7 @@ from nanobot.config.paths import (
 )
 from nanobot.config.schema import Config
 from nanobot.utils.helpers import ensure_workspace_git_root, sync_workspace_templates
-from nanobot.workspace_git import bootstrap_workspace_git
+from nanobot.workspace_git import bootstrap_workspace_git, prepare_workspace_git_access
 
 app = typer.Typer(
     name="nanobot",
@@ -1060,6 +1060,7 @@ def _load_runtime_config(config: str | None = None, workspace: str | None = None
     _warn_deprecated_config_keys(config_path)
     if workspace:
         loaded.agents.defaults.workspace = workspace
+    prepare_workspace_git_access(loaded.workspace_path)
     return loaded
 
 
