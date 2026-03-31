@@ -1,7 +1,8 @@
-"""Helpers for publishing a workspace to a remote git host."""
+"""Helpers for publishing and syncing a workspace git repository."""
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import subprocess
 from dataclasses import dataclass
@@ -10,8 +11,11 @@ from pathlib import Path
 import httpx
 from loguru import logger
 
+from nanobot.agent.hook import AgentHook, AgentHookContext
 from nanobot.config.paths import slugify_agent_name
 from nanobot.config.schema import WorkspaceGitConfig
+
+DEFAULT_COMMIT_MESSAGE = "chore(workspace): sync automated changes"
 
 
 @dataclass(slots=True)
@@ -62,6 +66,109 @@ def bootstrap_workspace_git(
         pushed=pushed,
         push_skipped_reason=push_skipped_reason,
     )
+
+
+def sync_workspace_repo(
+    workspace: Path,
+    *,
+    remote: str = "origin",
+    branch: str = "main",
+    commit_message: str = DEFAULT_COMMIT_MESSAGE,
+) -> str:
+    """Commit and push workspace changes on a fixed branch."""
+    top_level = _git_capture(workspace, "rev-parse", "--show-toplevel", check=False)
+    if top_level is None:
+        logger.debug("Workspace git sync skipped: workspace is not a git repo")
+        return "not_a_repo"
+
+    if Path(top_level).resolve() != workspace.resolve():
+        logger.warning(
+            "Workspace git sync skipped: workspace {} is inside repo {}",
+            workspace,
+            top_level,
+        )
+        return "workspace_not_repo_root"
+
+    current_branch = _git_capture(workspace, "symbolic-ref", "--quiet", "--short", "HEAD", check=False)
+    if current_branch is None:
+        logger.warning("Workspace git sync skipped: detached HEAD")
+        return "detached_head"
+    if current_branch != branch:
+        logger.warning(
+            "Workspace git sync skipped: current branch is {}, expected {}",
+            current_branch,
+            branch,
+        )
+        return "wrong_branch"
+
+    if _has_in_progress_git_state(workspace):
+        logger.warning("Workspace git sync skipped: git operation already in progress")
+        return "git_busy"
+
+    if _has_conflicts(workspace):
+        logger.warning("Workspace git sync skipped: unresolved merge conflicts")
+        return "conflicts"
+
+    if _git_capture(workspace, "remote", "get-url", remote, check=False) is None:
+        logger.warning("Workspace git sync skipped: remote {} is not configured", remote)
+        return "missing_remote"
+
+    _git(workspace, "fetch", remote)
+
+    has_changes = _git_is_dirty(workspace)
+    remote_ref = f"{remote}/{branch}"
+    remote_exists = _git_capture(workspace, "rev-parse", "--verify", remote_ref, check=False) is not None
+
+    if not has_changes and remote_exists and _is_up_to_date(workspace, remote_ref):
+        return "up_to_date"
+
+    if has_changes:
+        _git(workspace, "add", "-A")
+        _commit_workspace_sync(workspace, commit_message)
+
+    if remote_exists:
+        _git(workspace, "rebase", remote_ref)
+
+    _git(workspace, "push", remote, f"HEAD:{branch}")
+    return "synced"
+
+
+class WorkspaceGitSyncHook(AgentHook):
+    """Sync the workspace repo after completed agent turns."""
+
+    def __init__(
+        self,
+        workspace: Path,
+        *,
+        remote: str = "origin",
+        branch: str = "main",
+        commit_message: str = DEFAULT_COMMIT_MESSAGE,
+        sync_on_errors: bool = True,
+    ) -> None:
+        self.workspace = workspace
+        self.remote = remote
+        self.branch = branch
+        self.commit_message = commit_message
+        self.sync_on_errors = sync_on_errors
+
+    async def after_iteration(self, context: AgentHookContext) -> None:
+        if not self._should_sync(context):
+            return
+
+        result = await asyncio.to_thread(
+            sync_workspace_repo,
+            self.workspace,
+            remote=self.remote,
+            branch=self.branch,
+            commit_message=self.commit_message,
+        )
+        if result not in {"up_to_date", "synced"}:
+            logger.info("Workspace git sync hook result: {}", result)
+
+    def _should_sync(self, context: AgentHookContext) -> bool:
+        if context.final_content is not None:
+            return True
+        return self.sync_on_errors and context.stop_reason in {"error", "tool_error"}
 
 
 def _github_headers(token: str) -> dict[str, str]:
@@ -161,6 +268,10 @@ def _commit(workspace: Path, *, message: str, bot_name: str) -> None:
     )
 
 
+def _commit_workspace_sync(workspace: Path, message: str) -> None:
+    _git(workspace, "commit", "-m", message)
+
+
 def _push(workspace: Path, *, remote: str, branch: str, token: str, set_upstream: bool) -> None:
     basic = base64.b64encode(f"x-access-token:{token}".encode("utf-8")).decode("ascii")
     args = [
@@ -181,6 +292,38 @@ def _git_has_commits(workspace: Path) -> bool:
 def _git_is_dirty(workspace: Path) -> bool:
     status = _git_capture(workspace, "status", "--porcelain", check=False)
     return bool(status)
+
+
+def _is_up_to_date(workspace: Path, remote_ref: str) -> bool:
+    counts = _git_capture(workspace, "rev-list", "--left-right", "--count", f"HEAD...{remote_ref}")
+    if not counts:
+        return False
+    ahead_str, behind_str = counts.split()
+    return ahead_str == "0" and behind_str == "0"
+
+
+def _has_conflicts(workspace: Path) -> bool:
+    conflicts = _git_capture(workspace, "diff", "--name-only", "--diff-filter=U")
+    return bool(conflicts and conflicts.strip())
+
+
+def _has_in_progress_git_state(workspace: Path) -> bool:
+    for git_path in [
+        "MERGE_HEAD",
+        "CHERRY_PICK_HEAD",
+        "REVERT_HEAD",
+        "rebase-merge",
+        "rebase-apply",
+    ]:
+        resolved = _git_capture(workspace, "rev-parse", "--git-path", git_path)
+        if not resolved:
+            continue
+        resolved_path = Path(resolved)
+        if not resolved_path.is_absolute():
+            resolved_path = workspace / resolved_path
+        if resolved_path.exists():
+            return True
+    return False
 
 
 def _git_capture(workspace: Path, *args: str, check: bool = True) -> str | None:
@@ -217,3 +360,12 @@ def _git(workspace: Path, *args: str) -> None:
     except subprocess.CalledProcessError as exc:
         logger.error("workspace git command failed: git {}", " ".join(args))
         raise RuntimeError(f"git {' '.join(args)} failed") from exc
+
+
+__all__ = [
+    "DEFAULT_COMMIT_MESSAGE",
+    "WorkspaceGitBootstrapResult",
+    "WorkspaceGitSyncHook",
+    "bootstrap_workspace_git",
+    "sync_workspace_repo",
+]
