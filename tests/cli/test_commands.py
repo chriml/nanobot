@@ -741,6 +741,20 @@ def test_agent_help_shows_workspace_and_config_options():
     assert "-c" in stripped_output
 
 
+def test_agent_command_installs_workspace_git_hook(mock_agent_runtime, monkeypatch):
+    seen = {"called": False}
+
+    monkeypatch.setattr(
+        "nanobot.cli.git_hooked.install_workspace_git_hook",
+        lambda: seen.__setitem__("called", True),
+    )
+
+    result = runner.invoke(app, ["agent", "-m", "hello"])
+
+    assert result.exit_code == 0
+    assert seen["called"] is True
+
+
 def test_agent_uses_default_config_when_no_workspace_or_config_flags(mock_agent_runtime):
     result = runner.invoke(app, ["agent", "-m", "hello"])
 

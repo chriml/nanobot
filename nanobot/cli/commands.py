@@ -257,6 +257,9 @@ def main(
     ),
 ):
     """nanobot - Personal AI Assistant."""
+    from nanobot.cli.git_hooked import install_workspace_git_hook
+
+    install_workspace_git_hook()
     pass
 
 
