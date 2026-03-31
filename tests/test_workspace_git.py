@@ -104,6 +104,42 @@ def test_bootstrap_workspace_git_skips_push_for_dirty_existing_repo(tmp_path, mo
     assert pushed == []
 
 
+def test_bootstrap_workspace_git_prepares_initial_commit_before_remote_setup(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("hello\n", encoding="utf-8")
+    _git(workspace, "init", "-q")
+
+    state: dict[str, bool] = {"had_commit_when_remote_set": False}
+
+    monkeypatch.setattr("nanobot.workspace_git._github_login", lambda _token: "octocat")
+    monkeypatch.setattr(
+        "nanobot.workspace_git._ensure_github_repo",
+        lambda **_kwargs: ("https://github.com/octocat/alpha-bot.git", True),
+    )
+
+    def fake_configure_remote(_workspace, _remote, _clone_url):
+        state["had_commit_when_remote_set"] = (
+            _git(_workspace, "rev-parse", "--verify", "HEAD") != ""
+        )
+        return True
+
+    monkeypatch.setattr("nanobot.workspace_git._configure_remote", fake_configure_remote)
+    monkeypatch.setattr(
+        "nanobot.workspace_git._push",
+        lambda *_args, **_kwargs: None,
+    )
+
+    result = bootstrap_workspace_git(
+        workspace,
+        bot_name="Alpha Bot",
+        config=WorkspaceGitConfig(enabled=True, github_token="ghp_test", repo="alpha-bot"),
+    )
+
+    assert result is not None
+    assert state["had_commit_when_remote_set"] is True
+
+
 def _init_workspace_repo(tmp_path: Path) -> tuple[Path, Path]:
     remote = tmp_path / "remote.git"
     workspace = tmp_path / "workspace"

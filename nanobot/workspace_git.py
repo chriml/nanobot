@@ -49,6 +49,11 @@ def bootstrap_workspace_git(
         repo=repo,
         private=config.private,
     )
+    _prepare_initial_workspace_commit(
+        workspace,
+        branch=config.branch,
+        bot_name=bot_name,
+    )
     configured_remote = _configure_remote(workspace, config.remote, clone_url)
     pushed, push_skipped_reason = _ensure_published_head(
         workspace=workspace,
@@ -220,7 +225,14 @@ def _configure_remote(workspace: Path, remote: str, clone_url: str) -> bool:
     if current:
         _git(workspace, "remote", "set-url", remote, clone_url)
     else:
-        _git(workspace, "remote", "add", remote, clone_url)
+        try:
+            _git(workspace, "remote", "add", remote, clone_url)
+        except RuntimeError:
+            retry_current = _git_capture(workspace, "remote", "get-url", remote, check=False)
+            if not retry_current:
+                raise
+            if retry_current != clone_url:
+                _git(workspace, "remote", "set-url", remote, clone_url)
     return True
 
 
@@ -238,9 +250,7 @@ def _ensure_published_head(
     if not has_commits:
         if not dirty:
             return False, "workspace has no commits and no files to publish"
-        _git(workspace, "checkout", "--orphan", branch)
-        _git(workspace, "add", "-A")
-        _commit(workspace, message="Initialize workspace", bot_name=bot_name)
+        _prepare_initial_workspace_commit(workspace, branch=branch, bot_name=bot_name)
         _push(workspace, remote=remote, branch=branch, token=token, set_upstream=True)
         return True, None
 
@@ -266,6 +276,19 @@ def _commit(workspace: Path, *, message: str, bot_name: str) -> None:
         "-m",
         message,
     )
+
+
+def _prepare_initial_workspace_commit(workspace: Path, *, branch: str, bot_name: str) -> bool:
+    """Create the initial branch commit for a fresh dirty repo."""
+    if _git_has_commits(workspace) or not _git_is_dirty(workspace):
+        return False
+
+    current_branch = _git_capture(workspace, "branch", "--show-current", check=False)
+    if current_branch != branch:
+        _git(workspace, "checkout", "--orphan", branch)
+    _git(workspace, "add", "-A")
+    _commit(workspace, message="Initialize workspace", bot_name=bot_name)
+    return True
 
 
 def _commit_workspace_sync(workspace: Path, message: str) -> None:
@@ -348,18 +371,19 @@ def _git_capture(workspace: Path, *args: str, check: bool = True) -> str | None:
 
 def _git(workspace: Path, *args: str) -> None:
     try:
-        subprocess.run(
+        completed = subprocess.run(
             ["git", *args],
             cwd=workspace,
             check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
         )
     except FileNotFoundError as exc:
         raise RuntimeError("git is not installed") from exc
     except subprocess.CalledProcessError as exc:
-        logger.error("workspace git command failed: git {}", " ".join(args))
-        raise RuntimeError(f"git {' '.join(args)} failed") from exc
+        stderr = (exc.stderr or "").strip()
+        logger.error("workspace git command failed: git {}: {}", " ".join(args), stderr or exc.returncode)
+        raise RuntimeError(f"git {' '.join(args)} failed: {stderr or exc.returncode}") from exc
 
 
 __all__ = [
