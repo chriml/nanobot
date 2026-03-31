@@ -79,6 +79,7 @@ def _build_workspace_git_hook(workspace: Path) -> WorkspaceGitSyncHook | None:
     config = _load_workspace_git_config()
     if config is None:
         return None
+    prepare_workspace_git_access(workspace)
     if not _workspace_has_git_setup(workspace, remote=config.remote):
         return None
 

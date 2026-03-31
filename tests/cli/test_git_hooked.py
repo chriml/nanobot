@@ -87,6 +87,40 @@ def test_install_workspace_git_hook_refreshes_workspace_before_run(monkeypatch, 
     assert seen["hook"] is not None
 
 
+def test_install_workspace_git_hook_prepares_workspace_before_setup_check(
+    monkeypatch, tmp_path: Path
+) -> None:
+    seen: list[tuple[str, object]] = []
+
+    async def fake_run(spec: AgentRunSpec) -> AgentRunResult:
+        return AgentRunResult(final_content="ok", messages=[])
+
+    def fake_init(self, *args, **kwargs) -> None:
+        self.runner = SimpleNamespace(run=fake_run)
+
+    monkeypatch.setattr(AgentLoop, "__init__", fake_init)
+    monkeypatch.setattr(AgentLoop, "_workspace_git_hook_installed", False, raising=False)
+    monkeypatch.setattr(
+        "nanobot.cli.git_hooked._load_workspace_git_config",
+        lambda: WorkspaceGitConfig(enabled=True),
+    )
+    monkeypatch.setattr(
+        "nanobot.cli.git_hooked.prepare_workspace_git_access",
+        lambda workspace: seen.append(("prepare", workspace)),
+    )
+    monkeypatch.setattr(
+        "nanobot.cli.git_hooked._workspace_has_git_setup",
+        lambda workspace, *, remote: seen.append(("check", workspace)) or True,
+    )
+
+    install_workspace_git_hook()
+
+    loop = object.__new__(AgentLoop)
+    AgentLoop.__init__(loop, workspace=tmp_path)
+
+    assert seen == [("prepare", tmp_path), ("check", tmp_path)]
+
+
 def test_install_workspace_git_hook_supports_positional_workspace(monkeypatch, tmp_path: Path) -> None:
     seen: dict[str, object] = {}
 
