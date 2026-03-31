@@ -86,6 +86,7 @@ async def cmd_help(ctx: CommandContext) -> OutboundMessage:
     """Return available slash commands."""
     lines = [
         "🐈 nanobot commands:",
+        "/agents — Show active and archived spawned agents",
         "/new — Start a new conversation",
         "/stop — Stop the current task",
         "/restart — Restart the bot",
@@ -100,11 +101,53 @@ async def cmd_help(ctx: CommandContext) -> OutboundMessage:
     )
 
 
+def _format_agent_record(record: dict[str, object]) -> str:
+    label = str(record.get("label") or "unnamed")
+    agent_id = str(record.get("agent_id") or "?")
+    status = str(record.get("status") or "unknown")
+    created = str(record.get("created_at") or "?")
+    role = record.get("role")
+    role_suffix = f", role={role}" if role else ""
+    preview = str(record.get("result_preview") or "").strip()
+    line = f"- {label} (id: {agent_id}, status={status}{role_suffix}, started={created})"
+    return f"{line}\n  {preview}" if preview else line
+
+
+async def cmd_agents(ctx: CommandContext) -> OutboundMessage:
+    """Show active and archived spawned-agent records for the current session."""
+    runtime = ctx.loop.subagents
+    active = runtime.list_active(ctx.key) if hasattr(runtime, "list_active") else []
+    archived = runtime.list_archived(ctx.key, limit=10) if hasattr(runtime, "list_archived") else []
+
+    lines = ["Spawned agents for this session:"]
+    if active:
+        lines.append("Active:")
+        lines.extend(_format_agent_record(record) for record in active)
+    else:
+        lines.append("Active: none")
+
+    if archived:
+        lines.append("")
+        lines.append("Archived:")
+        lines.extend(_format_agent_record(record) for record in archived)
+    else:
+        lines.append("")
+        lines.append("Archived: none")
+
+    return OutboundMessage(
+        channel=ctx.msg.channel,
+        chat_id=ctx.msg.chat_id,
+        content="\n".join(lines),
+        metadata={"render_as": "text"},
+    )
+
+
 def register_builtin_commands(router: CommandRouter) -> None:
     """Register the default set of slash commands."""
     router.priority("/stop", cmd_stop)
     router.priority("/restart", cmd_restart)
     router.priority("/status", cmd_status)
+    router.exact("/agents", cmd_agents)
     router.exact("/new", cmd_new)
     router.exact("/status", cmd_status)
     router.exact("/help", cmd_help)

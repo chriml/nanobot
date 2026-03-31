@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
+from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
+
+import pytest
 
 from nanobot.config.schema import Config
 
@@ -76,3 +80,43 @@ def test_spawned_runtime_builds_override_provider_from_config(tmp_path, monkeypa
     assert runtime_config.providers.openai.api_key == "override-key"
     assert runtime_config.providers.openai.api_base == "https://example.com/v1"
     assert runtime_config.providers.openai.extra_headers == {"X-Test": "1"}
+
+
+@pytest.mark.asyncio
+async def test_spawned_runtime_archives_completed_agent_records(tmp_path, monkeypatch):
+    from nanobot.agent.spawned import SpawnedAgentRuntime
+    from nanobot.bus.queue import MessageBus
+    from nanobot.providers.base import LLMResponse
+
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+    provider.chat_with_retry = AsyncMock(return_value=LLMResponse(content="done", tool_calls=[]))
+
+    runtime = SpawnedAgentRuntime(provider=provider, workspace=tmp_path, bus=MessageBus())
+    runtime._announce_result = AsyncMock()
+
+    message = await runtime.spawn(
+        task="analyze market",
+        label="market scan",
+        origin_channel="test",
+        origin_chat_id="c1",
+        session_key="test:c1",
+        role="researcher",
+    )
+
+    agent_id = message.split("(id: ", 1)[1].split(")", 1)[0]
+    await runtime._running_tasks[agent_id]
+
+    archived = runtime.list_archived("test:c1")
+    assert len(archived) == 1
+    assert archived[0]["agent_id"] == agent_id
+    assert archived[0]["label"] == "market scan"
+    assert archived[0]["status"] == "completed"
+    assert archived[0]["role"] == "researcher"
+    assert archived[0]["result_preview"] == "done"
+    assert runtime.list_active("test:c1") == []
+
+    archive_lines = (tmp_path / "agents" / "archive.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    persisted = json.loads(archive_lines[-1])
+    assert persisted["agent_id"] == agent_id
+    assert persisted["status"] == "completed"

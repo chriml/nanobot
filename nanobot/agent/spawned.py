@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -22,6 +23,7 @@ from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMProvider
+from nanobot.utils.helpers import ensure_dir
 
 if TYPE_CHECKING:
     from nanobot.config.schema import Config, ExecToolConfig, WebSearchConfig
@@ -45,6 +47,28 @@ class SpawnOverrides:
             self.api_base,
             self.extra_headers,
         ))
+
+
+@dataclass(slots=True)
+class SpawnedAgentRecord:
+    """Persistable metadata for one spawned agent."""
+
+    agent_id: str
+    label: str
+    task: str
+    session_key: str
+    origin_channel: str
+    origin_chat_id: str
+    role: str | None = None
+    model: str | None = None
+    provider: str | None = None
+    status: str = "running"
+    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    finished_at: str | None = None
+    result_preview: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 class SpawnedAgentRuntime:
@@ -78,8 +102,11 @@ class SpawnedAgentRuntime:
         self.restrict_to_workspace = restrict_to_workspace
         self.harness = WorkspaceHarness(workspace)
         self.runner = AgentRunner(provider)
+        self.archive_dir = ensure_dir(workspace / "agents")
+        self.archive_file = self.archive_dir / "archive.jsonl"
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
         self._session_tasks: dict[str, set[str]] = {}
+        self._records: dict[str, SpawnedAgentRecord] = {}
 
     async def spawn(
         self,
@@ -109,6 +136,17 @@ class SpawnedAgentRuntime:
 
         bg_task = asyncio.create_task(
             self._run_agent(agent_id, task, display_label, origin, overrides, role=role)
+        )
+        self._records[agent_id] = SpawnedAgentRecord(
+            agent_id=agent_id,
+            label=display_label,
+            task=task,
+            session_key=session_key or f"{origin_channel}:{origin_chat_id}",
+            origin_channel=origin_channel,
+            origin_chat_id=origin_chat_id,
+            role=role,
+            model=overrides.model or self.model,
+            provider=overrides.provider,
         )
         self._running_tasks[agent_id] = bg_task
         if session_key:
@@ -171,6 +209,11 @@ class SpawnedAgentRuntime:
                 fail_on_tool_error=True,
             ))
             if result.stop_reason == "tool_error":
+                self._archive_record(
+                    agent_id,
+                    status="failed",
+                    result=self._format_partial_progress(result),
+                )
                 await self._announce_result(
                     agent_id,
                     label,
@@ -181,6 +224,11 @@ class SpawnedAgentRuntime:
                 )
                 return
             if result.stop_reason == "error":
+                self._archive_record(
+                    agent_id,
+                    status="failed",
+                    result=result.error or self._DEFAULT_FAILURE,
+                )
                 await self._announce_result(
                     agent_id,
                     label,
@@ -193,9 +241,15 @@ class SpawnedAgentRuntime:
 
             final_result = result.final_content or "Task completed but no final response was generated."
             logger.info("Spawned runtime agent [{}] completed successfully", agent_id)
+            self._archive_record(agent_id, status="completed", result=final_result)
             await self._announce_result(agent_id, label, task, final_result, origin, "ok")
+        except asyncio.CancelledError:
+            self._archive_record(agent_id, status="cancelled", result="Cancelled.")
+            logger.info("Spawned runtime agent [{}] cancelled", agent_id)
+            raise
         except Exception as exc:
             error_msg = f"Error: {exc}"
+            self._archive_record(agent_id, status="failed", result=error_msg)
             logger.error("Spawned runtime agent [{}] failed: {}", agent_id, exc)
             await self._announce_result(agent_id, label, task, error_msg, origin, "error")
 
@@ -362,6 +416,58 @@ Tools like 'read_file' and 'web_fetch' can return native image content. Read vis
             parts.append(f"## Skills\n\nRead SKILL.md with read_file to use a skill.\n\n{skills_summary}")
 
         return "\n\n".join(parts)
+
+    @staticmethod
+    def _preview_result(result: str | None, limit: int = 280) -> str | None:
+        """Keep archived results compact for status inspection."""
+        if not result:
+            return None
+        compact = " ".join(result.split())
+        return compact if len(compact) <= limit else compact[: limit - 3] + "..."
+
+    def _archive_record(self, agent_id: str, *, status: str, result: str | None = None) -> None:
+        """Persist the final lifecycle record for one spawned agent."""
+        record = self._records.pop(agent_id, None)
+        if record is None:
+            return
+        record.status = status
+        record.finished_at = datetime.now().isoformat()
+        record.result_preview = self._preview_result(result)
+        try:
+            with open(self.archive_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record.to_dict(), ensure_ascii=False) + "\n")
+        except Exception:
+            logger.exception("Failed to archive spawned-agent record {}", agent_id)
+
+    def list_active(self, session_key: str | None = None) -> list[dict[str, Any]]:
+        """Return active in-memory spawned agents, optionally scoped to a session."""
+        records = [
+            record.to_dict()
+            for record in self._records.values()
+            if record.status == "running" and (session_key is None or record.session_key == session_key)
+        ]
+        return sorted(records, key=lambda item: item["created_at"], reverse=True)
+
+    def list_archived(self, session_key: str | None = None, limit: int = 10) -> list[dict[str, Any]]:
+        """Return archived spawned-agent records from disk, newest first."""
+        if limit <= 0 or not self.archive_file.exists():
+            return []
+        records: list[dict[str, Any]] = []
+        try:
+            with open(self.archive_file, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    data = json.loads(line)
+                    if session_key is not None and data.get("session_key") != session_key:
+                        continue
+                    records.append(data)
+        except Exception:
+            logger.exception("Failed to load spawned-agent archive")
+            return []
+        records.sort(key=lambda item: item.get("finished_at") or item.get("created_at") or "", reverse=True)
+        return records[:limit]
 
     async def cancel_by_session(self, session_key: str) -> int:
         """Cancel all running agents for the given session."""
