@@ -126,7 +126,7 @@ class UpdatesConfig(Base):
 class WorkspaceGitConfig(Base):
     """Workspace git publishing configuration."""
 
-    enabled: bool = False
+    enabled: bool = True
     provider: Literal["github"] = "github"
     github_token: str = ""
     repo: str = ""

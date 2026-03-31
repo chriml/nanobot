@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from nanobot.agent.loop import AgentLoop
 from nanobot.agent.runner import AgentRunResult, AgentRunSpec
 from nanobot.cli.git_hooked import install_workspace_git_hook
+from nanobot.config.schema import WorkspaceGitConfig
 from nanobot.workspace_git import WorkspaceGitSyncHook
 
 
@@ -21,6 +22,14 @@ def test_install_workspace_git_hook_wraps_runner_for_keyword_workspace(monkeypat
 
     monkeypatch.setattr(AgentLoop, "__init__", fake_init)
     monkeypatch.setattr(AgentLoop, "_workspace_git_hook_installed", False, raising=False)
+    monkeypatch.setattr(
+        "nanobot.cli.git_hooked._load_workspace_git_config",
+        lambda: WorkspaceGitConfig(enabled=True),
+    )
+    monkeypatch.setattr(
+        "nanobot.cli.git_hooked._workspace_has_git_setup",
+        lambda workspace, *, remote: True,
+    )
 
     install_workspace_git_hook()
 
@@ -46,6 +55,14 @@ def test_install_workspace_git_hook_refreshes_workspace_before_run(monkeypatch, 
 
     monkeypatch.setattr(AgentLoop, "__init__", fake_init)
     monkeypatch.setattr(AgentLoop, "_workspace_git_hook_installed", False, raising=False)
+    monkeypatch.setattr(
+        "nanobot.cli.git_hooked._load_workspace_git_config",
+        lambda: WorkspaceGitConfig(enabled=True),
+    )
+    monkeypatch.setattr(
+        "nanobot.cli.git_hooked._workspace_has_git_setup",
+        lambda workspace, *, remote: True,
+    )
     monkeypatch.setattr(
         "nanobot.cli.git_hooked.prepare_workspace_git_access",
         lambda workspace: seen.__setitem__("prepared", workspace),
@@ -83,6 +100,14 @@ def test_install_workspace_git_hook_supports_positional_workspace(monkeypatch, t
 
     monkeypatch.setattr(AgentLoop, "__init__", fake_init)
     monkeypatch.setattr(AgentLoop, "_workspace_git_hook_installed", False, raising=False)
+    monkeypatch.setattr(
+        "nanobot.cli.git_hooked._load_workspace_git_config",
+        lambda: WorkspaceGitConfig(enabled=True),
+    )
+    monkeypatch.setattr(
+        "nanobot.cli.git_hooked._workspace_has_git_setup",
+        lambda workspace, *, remote: True,
+    )
 
     install_workspace_git_hook()
 
@@ -95,3 +120,60 @@ def test_install_workspace_git_hook_supports_positional_workspace(monkeypatch, t
     assert isinstance(getattr(loop, "_workspace_git_sync_hook"), WorkspaceGitSyncHook)
     assert getattr(loop, "_workspace_git_sync_hook").workspace == tmp_path
     assert seen["hook"] is not None
+
+
+def test_install_workspace_git_hook_skips_when_disabled(monkeypatch, tmp_path: Path) -> None:
+    seen: dict[str, object] = {}
+
+    async def fake_run(spec: AgentRunSpec) -> AgentRunResult:
+        seen["hook"] = spec.hook
+        return AgentRunResult(final_content="ok", messages=[])
+
+    def fake_init(self, *args, **kwargs) -> None:
+        self.runner = SimpleNamespace(run=fake_run)
+
+    monkeypatch.setattr(AgentLoop, "__init__", fake_init)
+    monkeypatch.setattr(AgentLoop, "_workspace_git_hook_installed", False, raising=False)
+    monkeypatch.setattr("nanobot.cli.git_hooked._load_workspace_git_config", lambda: None)
+
+    install_workspace_git_hook()
+
+    loop = object.__new__(AgentLoop)
+    AgentLoop.__init__(loop, workspace=tmp_path)
+    spec = AgentRunSpec(initial_messages=[], tools=SimpleNamespace(), model="m", max_iterations=1)
+    asyncio.run(loop.runner.run(spec))
+
+    assert "hook" not in seen or seen["hook"] is None
+    assert not hasattr(loop, "_workspace_git_sync_hook")
+
+
+def test_install_workspace_git_hook_skips_without_git_setup(monkeypatch, tmp_path: Path) -> None:
+    seen: dict[str, object] = {}
+
+    async def fake_run(spec: AgentRunSpec) -> AgentRunResult:
+        seen["hook"] = spec.hook
+        return AgentRunResult(final_content="ok", messages=[])
+
+    def fake_init(self, *args, **kwargs) -> None:
+        self.runner = SimpleNamespace(run=fake_run)
+
+    monkeypatch.setattr(AgentLoop, "__init__", fake_init)
+    monkeypatch.setattr(AgentLoop, "_workspace_git_hook_installed", False, raising=False)
+    monkeypatch.setattr(
+        "nanobot.cli.git_hooked._load_workspace_git_config",
+        lambda: WorkspaceGitConfig(enabled=True),
+    )
+    monkeypatch.setattr(
+        "nanobot.cli.git_hooked._workspace_has_git_setup",
+        lambda workspace, *, remote: False,
+    )
+
+    install_workspace_git_hook()
+
+    loop = object.__new__(AgentLoop)
+    AgentLoop.__init__(loop, workspace=tmp_path)
+    spec = AgentRunSpec(initial_messages=[], tools=SimpleNamespace(), model="m", max_iterations=1)
+    asyncio.run(loop.runner.run(spec))
+
+    assert "hook" not in seen or seen["hook"] is None
+    assert not hasattr(loop, "_workspace_git_sync_hook")

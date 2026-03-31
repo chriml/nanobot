@@ -7,6 +7,7 @@ from dataclasses import replace
 from functools import wraps
 import os
 from pathlib import Path
+import subprocess
 from typing import Any
 
 from loguru import logger
@@ -15,6 +16,8 @@ from nanobot.agent.hook import AgentHook, AgentHookContext
 from nanobot.agent.loop import AgentLoop
 from nanobot.agent.runner import AgentRunSpec
 from nanobot.cli.commands import app
+from nanobot.config.loader import load_config
+from nanobot.config.schema import WorkspaceGitConfig
 from nanobot.workspace_git import (
     DEFAULT_COMMIT_MESSAGE,
     WorkspaceGitSyncHook,
@@ -40,6 +43,8 @@ def install_workspace_git_hook() -> None:
             return
 
         workspace_hook = _build_workspace_git_hook(Path(workspace))
+        if workspace_hook is None:
+            return
         original_run = self.runner.run
 
         @wraps(original_run)
@@ -70,17 +75,50 @@ def _resolve_workspace_arg(args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any
     return None
 
 
-def _build_workspace_git_hook(workspace: Path) -> WorkspaceGitSyncHook:
+def _build_workspace_git_hook(workspace: Path) -> WorkspaceGitSyncHook | None:
+    config = _load_workspace_git_config()
+    if config is None:
+        return None
+    if not _workspace_has_git_setup(workspace, remote=config.remote):
+        return None
+
     return WorkspaceGitSyncHook(
         workspace,
-        remote=os.environ.get("NANOBOT_GIT_HOOK_REMOTE", "origin"),
-        branch=os.environ.get("NANOBOT_GIT_HOOK_BRANCH", "main"),
+        remote=os.environ.get("NANOBOT_GIT_HOOK_REMOTE", config.remote),
+        branch=os.environ.get("NANOBOT_GIT_HOOK_BRANCH", config.branch),
         commit_message=os.environ.get(
             "NANOBOT_GIT_HOOK_COMMIT_MESSAGE",
             DEFAULT_COMMIT_MESSAGE,
         ),
         sync_on_errors=os.environ.get("NANOBOT_GIT_HOOK_SYNC_ERRORS", "1") != "0",
     )
+
+
+def _load_workspace_git_config() -> WorkspaceGitConfig | None:
+    try:
+        config = load_config()
+    except Exception as exc:
+        logger.debug("Workspace git hook config load skipped: {}", exc)
+        return None
+    if not config.workspace_git.enabled:
+        return None
+    return config.workspace_git
+
+
+def _workspace_has_git_setup(workspace: Path, *, remote: str) -> bool:
+    if not (workspace / ".git").exists():
+        return False
+    try:
+        completed = subprocess.run(
+            ["git", "config", "--get", f"remote.{remote}.url"],
+            cwd=workspace,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return False
+    return bool(completed.stdout.strip())
 
 
 async def _prepare_workspace_before_run(hook: WorkspaceGitSyncHook) -> None:
