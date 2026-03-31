@@ -2,17 +2,25 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from functools import wraps
 import os
 from pathlib import Path
 from typing import Any
 
+from loguru import logger
+
 from nanobot.agent.hook import AgentHook, AgentHookContext
 from nanobot.agent.loop import AgentLoop
 from nanobot.agent.runner import AgentRunSpec
 from nanobot.cli.commands import app
-from nanobot.workspace_git import DEFAULT_COMMIT_MESSAGE, WorkspaceGitSyncHook
+from nanobot.workspace_git import (
+    DEFAULT_COMMIT_MESSAGE,
+    WorkspaceGitSyncHook,
+    prepare_workspace_git_access,
+    refresh_workspace_repo,
+)
 
 
 def install_workspace_git_hook() -> None:
@@ -36,6 +44,7 @@ def install_workspace_git_hook() -> None:
 
         @wraps(original_run)
         async def patched_run(spec: AgentRunSpec):
+            await _prepare_workspace_before_run(workspace_hook)
             hook = _CombinedHook(spec.hook or AgentHook(), workspace_hook)
             return await original_run(replace(spec, hook=hook))
 
@@ -72,6 +81,23 @@ def _build_workspace_git_hook(workspace: Path) -> WorkspaceGitSyncHook:
         ),
         sync_on_errors=os.environ.get("NANOBOT_GIT_HOOK_SYNC_ERRORS", "1") != "0",
     )
+
+
+async def _prepare_workspace_before_run(hook: WorkspaceGitSyncHook) -> None:
+    try:
+        await asyncio.to_thread(prepare_workspace_git_access, hook.workspace)
+        result = await asyncio.to_thread(
+            refresh_workspace_repo,
+            hook.workspace,
+            remote=hook.remote,
+            branch=hook.branch,
+        )
+    except Exception as exc:
+        logger.warning("Workspace git pre-run sync skipped: {}", exc)
+        return
+
+    if result not in {"up_to_date", "updated"}:
+        logger.info("Workspace git pre-run sync result: {}", result)
 
 
 class _CombinedHook(AgentHook):

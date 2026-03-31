@@ -31,6 +31,14 @@ class WorkspaceGitBootstrapResult:
     push_skipped_reason: str | None = None
 
 
+@dataclass(slots=True)
+class WorkspaceGitState:
+    """Validated workspace git state for refresh/sync operations."""
+
+    remote_ref: str
+    remote_exists: bool
+
+
 def bootstrap_workspace_git(
     workspace: Path,
     *,
@@ -79,8 +87,38 @@ def prepare_workspace_git_access(workspace: Path) -> None:
         return
     try:
         _ensure_safe_directory(workspace)
+        _configure_workspace_author_from_remote(workspace)
     except RuntimeError as exc:
         logger.warning("Workspace git safety setup skipped for {}: {}", workspace, exc)
+
+
+def refresh_workspace_repo(
+    workspace: Path,
+    *,
+    remote: str = "origin",
+    branch: str = "main",
+) -> str:
+    """Fetch and rebase the workspace branch onto the configured remote branch."""
+    state = _prepare_workspace_git_state(
+        workspace,
+        remote=remote,
+        branch=branch,
+        action="refresh",
+    )
+    if isinstance(state, str):
+        return state
+    if not state.remote_exists:
+        return "missing_remote_branch"
+
+    if _git_is_dirty(workspace):
+        logger.warning("Workspace git refresh skipped: workspace has uncommitted changes")
+        return "dirty"
+
+    if _is_up_to_date(workspace, state.remote_ref):
+        return "up_to_date"
+
+    _git(workspace, "rebase", state.remote_ref)
+    return "updated"
 
 
 def sync_workspace_repo(
@@ -91,59 +129,21 @@ def sync_workspace_repo(
     commit_message: str = DEFAULT_COMMIT_MESSAGE,
 ) -> str:
     """Commit and push workspace changes on a fixed branch."""
-    _ensure_safe_directory(workspace)
-    top_level = _git_capture(workspace, "rev-parse", "--show-toplevel", check=False)
-    if top_level is None:
-        logger.debug("Workspace git sync skipped: workspace is not a git repo")
-        return "not_a_repo"
+    state = _prepare_workspace_git_state(
+        workspace,
+        remote=remote,
+        branch=branch,
+        action="sync",
+    )
+    if isinstance(state, str):
+        return state
 
-    if Path(top_level).resolve() != workspace.resolve():
-        logger.warning(
-            "Workspace git sync skipped: workspace {} is inside repo {}",
-            workspace,
-            top_level,
-        )
-        return "workspace_not_repo_root"
-
-    current_branch = _git_capture(workspace, "symbolic-ref", "--quiet", "--short", "HEAD", check=False)
-    if current_branch is None:
-        logger.warning("Workspace git sync skipped: detached HEAD")
-        return "detached_head"
-    if current_branch != branch:
-        logger.warning(
-            "Workspace git sync skipped: current branch is {}, expected {}",
-            current_branch,
-            branch,
-        )
-        return "wrong_branch"
-
-    if _has_in_progress_git_state(workspace):
-        logger.warning("Workspace git sync skipped: git operation already in progress")
-        return "git_busy"
-
-    if _has_conflicts(workspace):
-        logger.warning("Workspace git sync skipped: unresolved merge conflicts")
-        return "conflicts"
-
-    if _git_capture(workspace, "remote", "get-url", remote, check=False) is None:
-        logger.warning("Workspace git sync skipped: remote {} is not configured", remote)
-        return "missing_remote"
-
-    _git(workspace, "fetch", remote)
-
-    has_changes = _git_is_dirty(workspace)
-    remote_ref = f"{remote}/{branch}"
-    remote_exists = _git_capture(workspace, "rev-parse", "--verify", remote_ref, check=False) is not None
-
-    if not has_changes and remote_exists and _is_up_to_date(workspace, remote_ref):
-        return "up_to_date"
-
-    if has_changes:
+    if _git_is_dirty(workspace):
         _git(workspace, "add", "-A")
         _commit_workspace_sync(workspace, commit_message)
 
-    if remote_exists:
-        _git(workspace, "rebase", remote_ref)
+    if state.remote_exists and not _is_up_to_date(workspace, state.remote_ref):
+        _git(workspace, "rebase", state.remote_ref)
 
     _git(workspace, "push", remote, f"HEAD:{branch}")
     return "synced"
@@ -283,6 +283,93 @@ def _configure_workspace_author(workspace: Path, *, owner: str) -> None:
     email_local = slugify_agent_name(owner) or "nanobot"
     _git(workspace, "config", "user.name", owner)
     _git(workspace, "config", "user.email", f"{email_local}@users.noreply.github.com")
+
+
+def _configure_workspace_author_from_remote(workspace: Path, *, remote: str = "origin") -> None:
+    owner = _remote_owner_from_git_config(workspace, remote=remote)
+    if owner:
+        _configure_workspace_author(workspace, owner=owner)
+
+
+def _remote_owner_from_git_config(workspace: Path, *, remote: str = "origin") -> str | None:
+    remote_url = _git_capture(workspace, "config", "--get", f"remote.{remote}.url", check=False)
+    if not remote_url:
+        return None
+    return _github_owner_from_remote_url(remote_url)
+
+
+def _github_owner_from_remote_url(remote_url: str) -> str | None:
+    normalized = remote_url.strip()
+    if normalized.endswith(".git"):
+        normalized = normalized[:-4]
+    if normalized.startswith("git@github.com:"):
+        path = normalized.split(":", 1)[1]
+    elif normalized.startswith("https://github.com/"):
+        path = normalized.split("https://github.com/", 1)[1]
+    elif normalized.startswith("http://github.com/"):
+        path = normalized.split("http://github.com/", 1)[1]
+    else:
+        return None
+
+    parts = [part for part in path.split("/") if part]
+    if len(parts) < 2:
+        return None
+    return parts[0]
+
+
+def _prepare_workspace_git_state(
+    workspace: Path,
+    *,
+    remote: str,
+    branch: str,
+    action: str,
+) -> WorkspaceGitState | str:
+    _ensure_safe_directory(workspace)
+    top_level = _git_capture(workspace, "rev-parse", "--show-toplevel", check=False)
+    if top_level is None:
+        logger.debug("Workspace git {} skipped: workspace is not a git repo", action)
+        return "not_a_repo"
+
+    if Path(top_level).resolve() != workspace.resolve():
+        logger.warning(
+            "Workspace git {} skipped: workspace {} is inside repo {}",
+            action,
+            workspace,
+            top_level,
+        )
+        return "workspace_not_repo_root"
+
+    current_branch = _git_capture(workspace, "symbolic-ref", "--quiet", "--short", "HEAD", check=False)
+    if current_branch is None:
+        logger.warning("Workspace git {} skipped: detached HEAD", action)
+        return "detached_head"
+    if current_branch != branch:
+        logger.warning(
+            "Workspace git {} skipped: current branch is {}, expected {}",
+            action,
+            current_branch,
+            branch,
+        )
+        return "wrong_branch"
+
+    if _has_in_progress_git_state(workspace):
+        logger.warning("Workspace git {} skipped: git operation already in progress", action)
+        return "git_busy"
+
+    if _has_conflicts(workspace):
+        logger.warning("Workspace git {} skipped: unresolved merge conflicts", action)
+        return "conflicts"
+
+    if _git_capture(workspace, "remote", "get-url", remote, check=False) is None:
+        logger.warning("Workspace git {} skipped: remote {} is not configured", action, remote)
+        return "missing_remote"
+
+    _configure_workspace_author_from_remote(workspace, remote=remote)
+    _git(workspace, "fetch", remote)
+
+    remote_ref = f"{remote}/{branch}"
+    remote_exists = _git_capture(workspace, "rev-parse", "--verify", remote_ref, check=False) is not None
+    return WorkspaceGitState(remote_ref=remote_ref, remote_exists=remote_exists)
 
 
 def _commit(workspace: Path, *, message: str) -> None:
@@ -443,5 +530,6 @@ __all__ = [
     "WorkspaceGitSyncHook",
     "bootstrap_workspace_git",
     "prepare_workspace_git_access",
+    "refresh_workspace_repo",
     "sync_workspace_repo",
 ]

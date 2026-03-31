@@ -11,6 +11,8 @@ from nanobot.config.schema import WorkspaceGitConfig
 from nanobot.workspace_git import (
     WorkspaceGitSyncHook,
     bootstrap_workspace_git,
+    prepare_workspace_git_access,
+    refresh_workspace_repo,
     sync_workspace_repo,
 )
 
@@ -209,6 +211,25 @@ def test_sync_workspace_repo_commits_and_pushes_changes(tmp_path: Path) -> None:
     assert pushed.stdout == "synced\n"
 
 
+def test_refresh_workspace_repo_pulls_latest_remote_changes(tmp_path: Path) -> None:
+    workspace, remote = _init_workspace_repo(tmp_path)
+    peer = tmp_path / "peer"
+
+    _git(tmp_path, "clone", str(remote), str(peer))
+    _git(peer, "checkout", "main")
+    _git(peer, "config", "user.name", "Peer")
+    _git(peer, "config", "user.email", "peer@example.com")
+    (peer / "README.md").write_text("updated remotely\n", encoding="utf-8")
+    _git(peer, "add", "README.md")
+    _git(peer, "commit", "-m", "remote change")
+    _git(peer, "push", "origin", "main")
+
+    result = refresh_workspace_repo(workspace)
+
+    assert result == "updated"
+    assert (workspace / "README.md").read_text(encoding="utf-8") == "updated remotely\n"
+
+
 def test_sync_workspace_repo_skips_nested_workspace(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     workspace = repo / "nested-workspace"
@@ -225,6 +246,16 @@ def test_sync_workspace_repo_skips_nested_workspace(tmp_path: Path) -> None:
     result = sync_workspace_repo(workspace)
 
     assert result == "workspace_not_repo_root"
+
+
+def test_prepare_workspace_git_access_sets_author_from_remote(tmp_path: Path) -> None:
+    workspace, _remote = _init_workspace_repo(tmp_path)
+    _git(workspace, "remote", "set-url", "origin", "https://github.com/nanochriml/tradebot.git")
+
+    prepare_workspace_git_access(workspace)
+
+    assert _git(workspace, "config", "user.name") == "nanochriml"
+    assert _git(workspace, "config", "user.email") == "nanochriml@users.noreply.github.com"
 
 
 def test_workspace_git_sync_hook_only_runs_on_completed_turn(monkeypatch, tmp_path: Path) -> None:

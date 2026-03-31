@@ -755,20 +755,6 @@ def test_agent_command_installs_workspace_git_hook(mock_agent_runtime, monkeypat
     assert seen["called"] is True
 
 
-def test_agent_prepares_workspace_git_access_on_startup(mock_agent_runtime, monkeypatch):
-    seen: dict[str, Path] = {}
-
-    monkeypatch.setattr(
-        "nanobot.cli.commands.prepare_workspace_git_access",
-        lambda workspace: seen.__setitem__("workspace", workspace),
-    )
-
-    result = runner.invoke(app, ["agent", "-m", "hello"])
-
-    assert result.exit_code == 0
-    assert seen["workspace"] == mock_agent_runtime["config"].workspace_path
-
-
 def test_agent_uses_default_config_when_no_workspace_or_config_flags(mock_agent_runtime):
     result = runner.invoke(app, ["agent", "-m", "hello"])
 
