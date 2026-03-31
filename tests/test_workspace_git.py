@@ -247,3 +247,21 @@ def test_workspace_git_sync_hook_only_runs_on_completed_turn(monkeypatch, tmp_pa
     )
     asyncio.run(hook.after_iteration(completed))
     assert seen == [tmp_path]
+
+
+def test_workspace_git_sync_hook_swallows_sync_failures(monkeypatch, tmp_path: Path) -> None:
+    hook = WorkspaceGitSyncHook(tmp_path)
+
+    def fake_sync(_workspace: Path, **_kwargs) -> str:
+        raise RuntimeError("push failed")
+
+    monkeypatch.setattr("nanobot.workspace_git.sync_workspace_repo", fake_sync)
+
+    completed = AgentHookContext(
+        iteration=1,
+        messages=[],
+        final_content="done",
+        stop_reason="completed",
+    )
+
+    asyncio.run(hook.after_iteration(completed))

@@ -172,13 +172,18 @@ class WorkspaceGitSyncHook(AgentHook):
         if not self._should_sync(context):
             return
 
-        result = await asyncio.to_thread(
-            sync_workspace_repo,
-            self.workspace,
-            remote=self.remote,
-            branch=self.branch,
-            commit_message=self.commit_message,
-        )
+        try:
+            result = await asyncio.to_thread(
+                sync_workspace_repo,
+                self.workspace,
+                remote=self.remote,
+                branch=self.branch,
+                commit_message=self.commit_message,
+            )
+        except Exception as exc:
+            logger.warning("Workspace git sync hook skipped after turn: {}", exc)
+            return
+
         if result not in {"up_to_date", "synced"}:
             logger.info("Workspace git sync hook result: {}", result)
 
