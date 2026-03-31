@@ -123,6 +123,18 @@ class UpdatesConfig(Base):
     local_branch: str = "nanobot-local"
 
 
+class WorkspaceGitConfig(Base):
+    """Workspace git publishing configuration."""
+
+    enabled: bool = False
+    provider: Literal["github"] = "github"
+    github_token: str = ""
+    repo: str = ""
+    private: bool = True
+    remote: str = "origin"
+    branch: str = "main"
+
+
 class WebSearchConfig(Base):
     """Web search tool configuration."""
 
@@ -177,6 +189,7 @@ class Config(BaseSettings):
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     updates: UpdatesConfig = Field(default_factory=UpdatesConfig)
+    workspace_git: WorkspaceGitConfig = Field(default_factory=WorkspaceGitConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
 
     @property

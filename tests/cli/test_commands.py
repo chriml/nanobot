@@ -137,7 +137,45 @@ def test_onboard_help_shows_workspace_and_config_options():
     assert "-c" in stripped_output
     assert "--name" in stripped_output
     assert "--wizard" in stripped_output
+    assert "--github-token" in stripped_output
+    assert "--github-repo" in stripped_output
+    assert "--github-private" in stripped_output
     assert "--dir" not in stripped_output
+
+
+def test_onboard_accepts_github_workspace_options(mock_paths, monkeypatch):
+    config_file, workspace_dir, _ = mock_paths
+
+    captured = {}
+
+    def fake_bootstrap(workspace, *, bot_name, config):
+        captured["workspace"] = workspace
+        captured["bot_name"] = bot_name
+        captured["config"] = config.model_copy(deep=True)
+        return None
+
+    monkeypatch.setattr("nanobot.cli.commands.bootstrap_workspace_git", fake_bootstrap)
+
+    result = runner.invoke(
+        app,
+        [
+            "onboard",
+            "--name",
+            "Alpha Bot",
+            "--github-token",
+            "ghp_test",
+            "--github-repo",
+            "alpha-bot",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["workspace"] == workspace_dir
+    assert captured["bot_name"] == "Alpha Bot"
+    assert captured["config"].enabled is True
+    assert captured["config"].github_token == "ghp_test"
+    assert captured["config"].repo == "alpha-bot"
+    assert captured["config"].private is True
 
 
 def test_onboard_interactive_discard_does_not_save_or_create_workspace(mock_paths, monkeypatch):

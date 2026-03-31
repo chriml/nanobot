@@ -54,6 +54,7 @@ from nanobot.config.paths import (
 )
 from nanobot.config.schema import Config
 from nanobot.utils.helpers import ensure_workspace_git_root, sync_workspace_templates
+from nanobot.workspace_git import bootstrap_workspace_git
 
 app = typer.Typer(
     name="nanobot",
@@ -293,6 +294,22 @@ def onboard(
     config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
     name: str | None = typer.Option(None, "--name", help="Agent name used for the default workspace path"),
     wizard: bool = typer.Option(False, "--wizard", help="Use interactive wizard"),
+    github_token: str | None = typer.Option(
+        None,
+        "--github-token",
+        envvar="NANOBOT_GITHUB_TOKEN",
+        help="GitHub token used to create and publish a private workspace repository",
+    ),
+    github_repo: str | None = typer.Option(
+        None,
+        "--github-repo",
+        help="Optional GitHub repository name. Defaults to the bot name slug.",
+    ),
+    github_private: bool = typer.Option(
+        True,
+        "--github-private/--github-public",
+        help="Create the GitHub workspace repository as private or public",
+    ),
 ):
     """Initialize nanobot configuration and workspace."""
     from nanobot.config.loader import get_config_path, load_config, save_config, set_config_path
@@ -334,6 +351,14 @@ def onboard(
     pre_workspace = config.workspace_path
     if name:
         config.agents.defaults.name = name
+    if github_token is not None:
+        config.workspace_git.enabled = True
+        config.workspace_git.github_token = github_token
+        config.workspace_git.private = github_private
+    if github_repo is not None:
+        config.workspace_git.enabled = True
+        config.workspace_git.repo = github_repo
+        config.workspace_git.private = github_private
     if workspace:
         config.agents.defaults.workspace = workspace
     elif not config_exists:
@@ -390,6 +415,27 @@ def onboard(
     sync_workspace_templates(workspace_path)
     if ensure_workspace_git_root(workspace_path):
         console.print(f"[green]✓[/green] Initialized git repository at {workspace_path}")
+    try:
+        result = bootstrap_workspace_git(
+            workspace_path,
+            bot_name=config.agents.defaults.name,
+            config=config.workspace_git,
+        )
+        if result:
+            state = "Created" if result.created_repo else "Using"
+            console.print(
+                f"[green]✓[/green] {state} GitHub repo [cyan]{result.owner}/{result.repo}[/cyan]"
+            )
+            if result.configured_remote:
+                console.print(
+                    f"[green]✓[/green] Configured git remote [cyan]{config.workspace_git.remote}[/cyan]"
+                )
+            if result.pushed:
+                console.print("[green]✓[/green] Published workspace to GitHub")
+            elif result.push_skipped_reason:
+                console.print(f"[yellow]![/yellow] GitHub push skipped: {result.push_skipped_reason}")
+    except Exception as exc:
+        console.print(f"[yellow]![/yellow] GitHub workspace setup skipped: {exc}")
 
     agent_cmd = 'nanobot agent -m "Hello!"'
     gateway_cmd = "nanobot gateway"
