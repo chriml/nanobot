@@ -1471,6 +1471,7 @@ If you prefer repo-local helpers before installing, use the included scripts:
 ./scripts/manage-bot.py show "Nano Chris"
 ./scripts/manage-bot.py gateway "Nano Chris"
 ./scripts/install-local.sh
+./scripts/restart-instance.sh "Chris"
 ```
 
 By default these scripts keep each instance under `~/.nanobot/instances/<slug>/`. Set `NANOBOT_INSTANCES_DIR` or pass `--base-dir` if you want a different root.

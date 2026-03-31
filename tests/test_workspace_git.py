@@ -258,6 +258,26 @@ def test_prepare_workspace_git_access_sets_author_from_remote(tmp_path: Path) ->
     assert _git(workspace, "config", "user.email") == "nanochriml@users.noreply.github.com"
 
 
+def test_refresh_workspace_repo_uses_token_for_github_https_fetch(tmp_path: Path, monkeypatch) -> None:
+    workspace, _remote = _init_workspace_repo(tmp_path)
+    _git(workspace, "remote", "set-url", "origin", "https://github.com/nanochriml/tradebot.git")
+
+    seen: list[tuple[str, ...]] = []
+
+    def fake_git(_workspace: Path, *args: str) -> None:
+        seen.append(args)
+
+    monkeypatch.setattr("nanobot.workspace_git._git", fake_git)
+
+    result = refresh_workspace_repo(workspace, github_token="ghp_test")
+
+    assert result == "up_to_date"
+    fetch_args = next(args for args in seen if "fetch" in args)
+    assert fetch_args[0] == "-c"
+    assert "AUTHORIZATION: basic " in fetch_args[1]
+    assert fetch_args[2:] == ("fetch", "origin")
+
+
 def test_workspace_git_sync_hook_only_runs_on_completed_turn(monkeypatch, tmp_path: Path) -> None:
     seen: list[Path] = []
     hook = WorkspaceGitSyncHook(tmp_path)

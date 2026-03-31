@@ -24,7 +24,7 @@ def test_install_workspace_git_hook_wraps_runner_for_keyword_workspace(monkeypat
     monkeypatch.setattr(AgentLoop, "_workspace_git_hook_installed", False, raising=False)
     monkeypatch.setattr(
         "nanobot.cli.git_hooked._load_workspace_git_config",
-        lambda: WorkspaceGitConfig(enabled=True),
+        lambda: WorkspaceGitConfig(enabled=True, github_token="ghp_test"),
     )
     monkeypatch.setattr(
         "nanobot.cli.git_hooked._workspace_has_git_setup",
@@ -40,6 +40,7 @@ def test_install_workspace_git_hook_wraps_runner_for_keyword_workspace(monkeypat
 
     assert seen["workspace"] == tmp_path
     assert getattr(loop, "_workspace_git_sync_hook").workspace == tmp_path
+    assert getattr(loop, "_workspace_git_sync_hook").github_token == "ghp_test"
     assert seen["hook"] is not None
 
 
@@ -57,7 +58,7 @@ def test_install_workspace_git_hook_refreshes_workspace_before_run(monkeypatch, 
     monkeypatch.setattr(AgentLoop, "_workspace_git_hook_installed", False, raising=False)
     monkeypatch.setattr(
         "nanobot.cli.git_hooked._load_workspace_git_config",
-        lambda: WorkspaceGitConfig(enabled=True),
+        lambda: WorkspaceGitConfig(enabled=True, github_token="ghp_test"),
     )
     monkeypatch.setattr(
         "nanobot.cli.git_hooked._workspace_has_git_setup",
@@ -69,9 +70,9 @@ def test_install_workspace_git_hook_refreshes_workspace_before_run(monkeypatch, 
     )
     monkeypatch.setattr(
         "nanobot.cli.git_hooked.refresh_workspace_repo",
-        lambda workspace, *, remote, branch: seen.__setitem__(
+        lambda workspace, *, remote, branch, github_token: seen.__setitem__(
             "refreshed",
-            (workspace, remote, branch),
+            (workspace, remote, branch, github_token),
         ) or "updated",
     )
 
@@ -83,7 +84,7 @@ def test_install_workspace_git_hook_refreshes_workspace_before_run(monkeypatch, 
     asyncio.run(loop.runner.run(spec))
 
     assert seen["prepared"] == tmp_path
-    assert seen["refreshed"] == (tmp_path, "origin", "main")
+    assert seen["refreshed"] == (tmp_path, "origin", "main", "ghp_test")
     assert seen["hook"] is not None
 
 

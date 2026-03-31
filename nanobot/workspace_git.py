@@ -97,6 +97,7 @@ def refresh_workspace_repo(
     *,
     remote: str = "origin",
     branch: str = "main",
+    github_token: str = "",
 ) -> str:
     """Fetch and rebase the workspace branch onto the configured remote branch."""
     state = _prepare_workspace_git_state(
@@ -104,6 +105,7 @@ def refresh_workspace_repo(
         remote=remote,
         branch=branch,
         action="refresh",
+        github_token=github_token,
     )
     if isinstance(state, str):
         return state
@@ -127,6 +129,7 @@ def sync_workspace_repo(
     remote: str = "origin",
     branch: str = "main",
     commit_message: str = DEFAULT_COMMIT_MESSAGE,
+    github_token: str = "",
 ) -> str:
     """Commit and push workspace changes on a fixed branch."""
     state = _prepare_workspace_git_state(
@@ -134,6 +137,7 @@ def sync_workspace_repo(
         remote=remote,
         branch=branch,
         action="sync",
+        github_token=github_token,
     )
     if isinstance(state, str):
         return state
@@ -145,7 +149,7 @@ def sync_workspace_repo(
     if state.remote_exists and not _is_up_to_date(workspace, state.remote_ref):
         _git(workspace, "rebase", state.remote_ref)
 
-    _git(workspace, "push", remote, f"HEAD:{branch}")
+    _push(workspace, remote=remote, branch=branch, token=github_token, set_upstream=False, refspec=f"HEAD:{branch}")
     return "synced"
 
 
@@ -160,12 +164,14 @@ class WorkspaceGitSyncHook(AgentHook):
         branch: str = "main",
         commit_message: str = DEFAULT_COMMIT_MESSAGE,
         sync_on_errors: bool = True,
+        github_token: str = "",
     ) -> None:
         self.workspace = workspace
         self.remote = remote
         self.branch = branch
         self.commit_message = commit_message
         self.sync_on_errors = sync_on_errors
+        self.github_token = github_token
 
     async def after_iteration(self, context: AgentHookContext) -> None:
         if not self._should_sync(context):
@@ -178,6 +184,7 @@ class WorkspaceGitSyncHook(AgentHook):
                 remote=self.remote,
                 branch=self.branch,
                 commit_message=self.commit_message,
+                github_token=self.github_token,
             )
         except Exception as exc:
             logger.warning("Workspace git sync hook skipped after turn: {}", exc)
@@ -317,12 +324,20 @@ def _github_owner_from_remote_url(remote_url: str) -> str | None:
     return parts[0]
 
 
+def _remote_uses_github_https(workspace: Path, *, remote: str) -> bool:
+    remote_url = _git_capture(workspace, "config", "--get", f"remote.{remote}.url", check=False)
+    if not remote_url:
+        return False
+    return remote_url.startswith("https://github.com/")
+
+
 def _prepare_workspace_git_state(
     workspace: Path,
     *,
     remote: str,
     branch: str,
     action: str,
+    github_token: str = "",
 ) -> WorkspaceGitState | str:
     _ensure_safe_directory(workspace)
     top_level = _git_capture(workspace, "rev-parse", "--show-toplevel", check=False)
@@ -365,7 +380,7 @@ def _prepare_workspace_git_state(
         return "missing_remote"
 
     _configure_workspace_author_from_remote(workspace, remote=remote)
-    _git(workspace, "fetch", remote)
+    _fetch(workspace, remote=remote, token=github_token)
 
     remote_ref = f"{remote}/{branch}"
     remote_exists = _git_capture(workspace, "rev-parse", "--verify", remote_ref, check=False) is not None
@@ -402,16 +417,37 @@ def _commit_workspace_sync(workspace: Path, message: str) -> None:
     _git(workspace, "commit", "-m", message)
 
 
-def _push(workspace: Path, *, remote: str, branch: str, token: str, set_upstream: bool) -> None:
-    basic = base64.b64encode(f"x-access-token:{token}".encode("utf-8")).decode("ascii")
-    args = [
-        "-c",
-        f"http.https://github.com/.extraheader=AUTHORIZATION: basic {basic}",
-        "push",
-    ]
+def _fetch(workspace: Path, *, remote: str, token: str = "") -> None:
+    _git_remote(workspace, "fetch", remote, remote=remote, token=token)
+
+
+def _push(
+    workspace: Path,
+    *,
+    remote: str,
+    branch: str,
+    token: str = "",
+    set_upstream: bool,
+    refspec: str | None = None,
+) -> None:
+    args = ["push"]
     if set_upstream:
         args.append("-u")
-    args.extend([remote, branch])
+    args.append(remote)
+    args.append(refspec or branch)
+    _git_remote(workspace, *args, remote=remote, token=token)
+
+
+def _git_remote(workspace: Path, *args: str, remote: str, token: str = "") -> None:
+    if token and _remote_uses_github_https(workspace, remote=remote):
+        basic = base64.b64encode(f"x-access-token:{token}".encode("utf-8")).decode("ascii")
+        _git(
+            workspace,
+            "-c",
+            f"http.https://github.com/.extraheader=AUTHORIZATION: basic {basic}",
+            *args,
+        )
+        return
     _git(workspace, *args)
 
 

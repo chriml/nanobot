@@ -92,6 +92,7 @@ def _build_workspace_git_hook(workspace: Path) -> WorkspaceGitSyncHook | None:
             DEFAULT_COMMIT_MESSAGE,
         ),
         sync_on_errors=os.environ.get("NANOBOT_GIT_HOOK_SYNC_ERRORS", "1") != "0",
+        github_token=config.github_token,
     )
 
 
@@ -130,6 +131,7 @@ async def _prepare_workspace_before_run(hook: WorkspaceGitSyncHook) -> None:
             hook.workspace,
             remote=hook.remote,
             branch=hook.branch,
+            github_token=hook.github_token,
         )
     except Exception as exc:
         logger.warning("Workspace git pre-run sync skipped: {}", exc)
