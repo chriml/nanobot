@@ -57,6 +57,8 @@ def test_bootstrap_workspace_git_creates_remote_and_initial_commit(tmp_path, mon
     assert result.pushed is True
     assert result.push_skipped_reason is None
     assert _git(workspace, "remote", "get-url", "origin") == "https://github.com/octocat/alpha-bot.git"
+    assert _git(workspace, "config", "user.name") == "octocat"
+    assert _git(workspace, "config", "user.email") == "octocat@users.noreply.github.com"
     assert _git(workspace, "rev-parse", "--verify", "HEAD")
     assert pushed == [("origin", "main")]
 

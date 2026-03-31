@@ -43,6 +43,7 @@ def bootstrap_workspace_git(
 
     _ensure_safe_directory(workspace)
     owner = _github_login(config.github_token)
+    _configure_workspace_author(workspace, owner=owner)
     repo = config.repo.strip() or slugify_agent_name(bot_name) or workspace.name
     clone_url, created_repo = _ensure_github_repo(
         token=config.github_token,
@@ -53,14 +54,12 @@ def bootstrap_workspace_git(
     _prepare_initial_workspace_commit(
         workspace,
         branch=config.branch,
-        bot_name=bot_name,
     )
     configured_remote = _configure_remote(workspace, config.remote, clone_url)
     pushed, push_skipped_reason = _ensure_published_head(
         workspace=workspace,
         remote=config.remote,
         branch=config.branch,
-        bot_name=bot_name,
         token=config.github_token,
     )
     return WorkspaceGitBootstrapResult(
@@ -258,7 +257,6 @@ def _ensure_published_head(
     workspace: Path,
     remote: str,
     branch: str,
-    bot_name: str,
     token: str,
 ) -> tuple[bool, str | None]:
     has_commits = _git_has_commits(workspace)
@@ -267,7 +265,7 @@ def _ensure_published_head(
     if not has_commits:
         if not dirty:
             return False, "workspace has no commits and no files to publish"
-        _prepare_initial_workspace_commit(workspace, branch=branch, bot_name=bot_name)
+        _prepare_initial_workspace_commit(workspace, branch=branch)
         _push(workspace, remote=remote, branch=branch, token=token, set_upstream=True)
         return True, None
 
@@ -281,18 +279,14 @@ def _ensure_published_head(
     return True, None
 
 
-def _commit(workspace: Path, *, message: str, bot_name: str) -> None:
-    email_local = slugify_agent_name(bot_name) or "nanobot"
-    _git(
-        workspace,
-        "-c",
-        f"user.name={bot_name}",
-        "-c",
-        f"user.email={email_local}@users.noreply.github.com",
-        "commit",
-        "-m",
-        message,
-    )
+def _configure_workspace_author(workspace: Path, *, owner: str) -> None:
+    email_local = slugify_agent_name(owner) or "nanobot"
+    _git(workspace, "config", "user.name", owner)
+    _git(workspace, "config", "user.email", f"{email_local}@users.noreply.github.com")
+
+
+def _commit(workspace: Path, *, message: str) -> None:
+    _git(workspace, "commit", "-m", message)
 
 
 def _ensure_safe_directory(workspace: Path) -> None:
@@ -304,7 +298,7 @@ def _ensure_safe_directory(workspace: Path) -> None:
     _git_global("config", "--global", "--add", "safe.directory", resolved)
 
 
-def _prepare_initial_workspace_commit(workspace: Path, *, branch: str, bot_name: str) -> bool:
+def _prepare_initial_workspace_commit(workspace: Path, *, branch: str) -> bool:
     """Create the initial branch commit for a fresh dirty repo."""
     if _git_has_commits(workspace) or not _git_is_dirty(workspace):
         return False
@@ -313,7 +307,7 @@ def _prepare_initial_workspace_commit(workspace: Path, *, branch: str, bot_name:
     if current_branch != branch:
         _git(workspace, "checkout", "--orphan", branch)
     _git(workspace, "add", "-A")
-    _commit(workspace, message="Initialize workspace", bot_name=bot_name)
+    _commit(workspace, message="Initialize workspace")
     return True
 
 
