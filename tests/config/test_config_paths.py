@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from nanobot.config.paths import (
+    get_agent_workspace_path,
     get_bridge_install_dir,
     get_cli_history_path,
     get_cron_dir,
@@ -11,6 +12,7 @@ from nanobot.config.paths import (
     get_runtime_subdir,
     get_workspace_path,
     is_default_workspace,
+    slugify_agent_name,
 )
 
 
@@ -41,6 +43,11 @@ def test_shared_and_legacy_paths_remain_global() -> None:
 def test_workspace_path_is_explicitly_resolved() -> None:
     assert get_workspace_path() == Path.home() / ".nanobot" / "workspace"
     assert get_workspace_path("~/custom-workspace") == Path.home() / "custom-workspace"
+
+
+def test_agent_workspace_path_uses_slugified_name() -> None:
+    assert slugify_agent_name("Alpha Bot") == "alpha-bot"
+    assert get_agent_workspace_path("Alpha Bot") == Path.home() / ".nanobot" / "agents" / "alpha-bot"
 
 
 def test_is_default_workspace_distinguishes_default_and_custom_paths() -> None:

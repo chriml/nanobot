@@ -83,6 +83,7 @@ dev = [
 
 [project.scripts]
 nanobot = "nanobot.cli.commands:app"
+nanochris = "nanobot.cli.nanochris:app"
 
 [build-system]
 requires = ["hatchling"]
@@ -94,7 +95,9 @@ allow-direct-references = true
 [tool.hatch.build]
 include = [
     "nanobot/**/*.py",
+    "nanobot/templates/.gitignore",
     "nanobot/templates/**/*.md",
+    "nanobot/templates/**/*.yaml",
     "nanobot/skills/**/*.md",
     "nanobot/skills/**/*.sh",
 ]

@@ -4,6 +4,7 @@ import base64
 import json
 import re
 import shutil
+import subprocess
 import time
 import uuid
 from datetime import datetime
@@ -448,6 +449,10 @@ def sync_workspace_templates(workspace: Path, silent: bool = False) -> list[str]
             _write(item, workspace / item.name)
     _write(tpl / "memory" / "MEMORY.md", workspace / "memory" / "MEMORY.md")
     _write(None, workspace / "memory" / "HISTORY.md")
+    _write(tpl / ".gitignore", workspace / ".gitignore")
+    _write(tpl / "harness" / "definition.yaml", workspace / "harness" / "definition.yaml")
+    _write(tpl / "harness" / "stages" / "README.md", workspace / "harness" / "stages" / "README.md")
+    _write(tpl / "harness" / "roles" / "README.md", workspace / "harness" / "roles" / "README.md")
     (workspace / "skills").mkdir(exist_ok=True)
 
     if added and not silent:
@@ -455,3 +460,20 @@ def sync_workspace_templates(workspace: Path, silent: bool = False) -> list[str]
         for name in added:
             Console().print(f"  [dim]Created {name}[/dim]")
     return added
+
+
+def ensure_workspace_git_root(workspace: Path) -> bool:
+    """Initialize a git repository for the workspace when one does not exist."""
+    if (workspace / ".git").exists():
+        return False
+    try:
+        subprocess.run(
+            ["git", "init", "-q"],
+            cwd=workspace,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return False
+    return True

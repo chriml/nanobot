@@ -1,0 +1,50 @@
+services:
+  searxng:
+    container_name: nanobot-searxng
+    image: docker.io/searxng/searxng:latest
+    restart: unless-stopped
+    ports:
+      - 8080:8080
+    volumes:
+      - ./docker/searxng/settings.yml:/etc/searxng/settings.yml:ro
+    depends_on:
+      - searxng-redis
+
+  searxng-redis:
+    container_name: nanobot-searxng-redis
+    image: docker.io/valkey/valkey:8-alpine
+    restart: unless-stopped
+
+  nanobot-gateway:
+    build:
+      dockerfile: Dockerfile.local
+    depends_on:
+      - searxng
+    volumes:
+      - ~/.cache/whisper:/root/.cache/whisper
+    environment:
+      NANOBOT_TOOLS__WEB__SEARCH__PROVIDER: searxng
+      NANOBOT_TOOLS__WEB__SEARCH__BASE_URL: http://searxng:8080
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      NANOBOT_TRANSCRIBE_COMMAND: ${NANOBOT_TRANSCRIBE_COMMAND:-}
+      NANOBOT_TRANSCRIBE_MODEL: ${NANOBOT_TRANSCRIBE_MODEL:-base}
+      NANOBOT_TRANSCRIBE_LANGUAGE: ${NANOBOT_TRANSCRIBE_LANGUAGE:-}
+
+  nanobot-cli:
+    build:
+      dockerfile: Dockerfile.local
+    depends_on:
+      - searxng
+    volumes:
+      - ~/.cache/whisper:/root/.cache/whisper
+    environment:
+      NANOBOT_TOOLS__WEB__SEARCH__PROVIDER: searxng
+      NANOBOT_TOOLS__WEB__SEARCH__BASE_URL: http://searxng:8080
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      NANOBOT_TRANSCRIBE_COMMAND: ${NANOBOT_TRANSCRIBE_COMMAND:-}
+      NANOBOT_TRANSCRIBE_MODEL: ${NANOBOT_TRANSCRIBE_MODEL:-base}
+      NANOBOT_TRANSCRIBE_LANGUAGE: ${NANOBOT_TRANSCRIBE_LANGUAGE:-}

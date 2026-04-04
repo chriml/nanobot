@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from nanobot.config.loader import get_config_path
@@ -32,6 +33,17 @@ def get_cron_dir() -> Path:
 def get_logs_dir() -> Path:
     """Return the logs directory."""
     return get_runtime_subdir("logs")
+
+
+def slugify_agent_name(name: str | None) -> str:
+    """Convert a user-facing agent name into a filesystem-safe slug."""
+    cleaned = re.sub(r"[^a-z0-9]+", "-", (name or "").strip().lower()).strip("-")
+    return cleaned or "default"
+
+
+def get_agent_workspace_path(name: str | None = None) -> Path:
+    """Return the default workspace/git root for a named agent."""
+    return ensure_dir(Path.home() / ".nanobot" / "agents" / slugify_agent_name(name))
 
 
 def get_workspace_path(workspace: str | None = None) -> Path:

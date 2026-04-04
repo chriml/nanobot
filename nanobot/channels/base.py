@@ -37,14 +37,26 @@ class BaseChannel(ABC):
         self._running = False
 
     async def transcribe_audio(self, file_path: str | Path) -> str:
-        """Transcribe an audio file via Groq Whisper. Returns empty string on failure."""
-        if not self.transcription_api_key:
-            return ""
+        """Transcribe audio with local Whisper first, then optional Groq fallback."""
         try:
-            from nanobot.providers.transcription import GroqTranscriptionProvider
+            from nanobot.providers.transcription import (
+                GroqTranscriptionProvider,
+                LocalWhisperTranscriptionProvider,
+            )
 
-            provider = GroqTranscriptionProvider(api_key=self.transcription_api_key)
-            return await provider.transcribe(file_path)
+            local_provider = LocalWhisperTranscriptionProvider()
+            if not local_provider.is_available():
+                logger.warning("{}: local transcription backend is unavailable", self.name)
+            transcript = await local_provider.transcribe(file_path)
+            if transcript:
+                return transcript
+
+            if not self.transcription_api_key:
+                logger.warning("{}: no local transcription result and no Groq fallback configured", self.name)
+                return ""
+
+            remote_provider = GroqTranscriptionProvider(api_key=self.transcription_api_key)
+            return await remote_provider.transcribe(file_path)
         except Exception as e:
             logger.warning("{}: audio transcription failed: {}", self.name, e)
             return ""

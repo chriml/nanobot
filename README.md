@@ -159,6 +159,8 @@ cd nanobot
 pip install -e .
 ```
 
+This also installs the `nanochris` CLI alias alongside `nanobot`.
+
 **Install with [uv](https://github.com/astral-sh/uv)** (stable, fast)
 
 ```bash
@@ -1450,6 +1452,62 @@ Run multiple nanobot instances simultaneously with separate configs and runtime 
 ### Quick Start
 
 If you want each instance to have its own dedicated workspace from the start, pass both `--config` and `--workspace` during onboarding.
+
+If you want the shortest installed flow:
+
+```bash
+docker build -t nanochris:local .
+nanochris newbot "Chris"
+```
+
+`newbot` creates `~/.nanobot/instances/chris/` and launches onboarding immediately inside an isolated Docker container for that instance.
+`nanochris` also manages a shared Docker search backend for local SearXNG. `start` will ensure the shared `nanochris-searxng` container is running on the `nanochris-net` network.
+
+You can preseed config defaults before onboarding. For example, enable Telegram and default to OpenAI Codex GPT-5.2:
+
+```bash
+nanochris newbot "Chris" --preset telegram --preset openai-codex-gpt-5.2
+```
+
+After that, keep everything under the installed CLI:
+
+```bash
+nanochris manage "Chris" onboard
+nanochris manage "Chris" config
+nanochris manage "Chris" start
+nanochris manage "Chris" stop
+nanochris manage "Chris" logs
+nanochris manage "Chris" login codex
+nanochris manage "Chris" login claude
+```
+
+You can also apply presets when re-running onboarding:
+
+```bash
+nanochris manage "Chris" --preset telegram --preset openai-codex-gpt-5.2 onboard
+```
+
+If you want the instance to use the bundled SearXNG backend for `web_search`, apply the local stack preset:
+
+```bash
+nanochris newbot "Chris" --preset local-stack
+```
+
+If you prefer repo-local helpers before installing, use the included scripts:
+
+```bash
+./scripts/new-bot.py "Nano Chris"
+./scripts/run-bot.py "Nano Chris" gateway
+./scripts/run-bot.py "Nano Chris" agent -m "Hello"
+./scripts/manage-bot.py -h
+./scripts/manage-bot.py list
+./scripts/manage-bot.py show "Nano Chris"
+./scripts/manage-bot.py gateway "Nano Chris"
+./scripts/install-local.sh
+./scripts/restart-instance.sh "Chris"
+```
+
+By default these scripts keep each instance under `~/.nanobot/instances/<slug>/`. Set `NANOBOT_INSTANCES_DIR` or pass `--base-dir` if you want a different root.
 
 **Initialize instances:**
 

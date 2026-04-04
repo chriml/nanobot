@@ -8,7 +8,9 @@ from typer.testing import CliRunner
 
 from nanobot.bus.events import OutboundMessage
 from nanobot.cli.commands import _make_provider, app
+from nanobot.config.paths import get_agent_workspace_path
 from nanobot.config.schema import Config
+from nanobot.instances import resolve_instance_paths
 from nanobot.providers.openai_codex_provider import _strip_model_prefix
 from nanobot.providers.registry import find_by_name
 
@@ -30,7 +32,8 @@ def mock_paths():
     with patch("nanobot.config.loader.get_config_path") as mock_cp, \
          patch("nanobot.config.loader.save_config") as mock_sc, \
          patch("nanobot.config.loader.load_config") as mock_lc, \
-         patch("nanobot.cli.commands.get_workspace_path") as mock_ws:
+         patch("nanobot.cli.commands.get_workspace_path") as mock_ws, \
+         patch("nanobot.cli.commands.ensure_workspace_git_root", return_value=False):
 
         base_dir = Path("./test_onboard_data")
         if base_dir.exists():
@@ -69,8 +72,10 @@ def test_onboard_fresh_install(mock_paths):
     assert "nanobot is ready" in result.stdout
     assert config_file.exists()
     assert (workspace_dir / "AGENTS.md").exists()
+    assert (workspace_dir / ".gitignore").exists()
+    assert (workspace_dir / "harness" / "definition.yaml").exists()
     assert (workspace_dir / "memory" / "MEMORY.md").exists()
-    expected_workspace = Config().workspace_path
+    expected_workspace = get_agent_workspace_path("default")
     assert mock_ws.call_args.args == (expected_workspace,)
 
 
@@ -130,8 +135,47 @@ def test_onboard_help_shows_workspace_and_config_options():
     assert "-w" in stripped_output
     assert "--config" in stripped_output
     assert "-c" in stripped_output
+    assert "--name" in stripped_output
     assert "--wizard" in stripped_output
+    assert "--github-token" in stripped_output
+    assert "--github-repo" in stripped_output
+    assert "--github-private" in stripped_output
     assert "--dir" not in stripped_output
+
+
+def test_onboard_accepts_github_workspace_options(mock_paths, monkeypatch):
+    config_file, workspace_dir, _ = mock_paths
+
+    captured = {}
+
+    def fake_bootstrap(workspace, *, bot_name, config):
+        captured["workspace"] = workspace
+        captured["bot_name"] = bot_name
+        captured["config"] = config.model_copy(deep=True)
+        return None
+
+    monkeypatch.setattr("nanobot.cli.commands.bootstrap_workspace_git", fake_bootstrap)
+
+    result = runner.invoke(
+        app,
+        [
+            "onboard",
+            "--name",
+            "Alpha Bot",
+            "--github-token",
+            "ghp_test",
+            "--github-repo",
+            "alpha-bot",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["workspace"] == workspace_dir
+    assert captured["bot_name"] == "Alpha Bot"
+    assert captured["config"].enabled is True
+    assert captured["config"].github_token == "ghp_test"
+    assert captured["config"].repo == "alpha-bot"
+    assert captured["config"].private is True
 
 
 def test_onboard_interactive_discard_does_not_save_or_create_workspace(mock_paths, monkeypatch):
@@ -174,6 +218,25 @@ def test_onboard_uses_explicit_config_and_workspace_paths(tmp_path, monkeypatch)
     assert f"--config {resolved_config}" in compact_output
 
 
+def test_onboard_name_sets_default_agent_workspace(tmp_path, monkeypatch):
+    config_path = tmp_path / "instance" / "config.json"
+    expected_workspace = get_agent_workspace_path("Alpha Bot")
+
+    monkeypatch.setattr("nanobot.channels.registry.discover_all", lambda: {})
+    monkeypatch.setattr("nanobot.cli.commands.ensure_workspace_git_root", lambda _workspace: False)
+
+    result = runner.invoke(
+        app,
+        ["onboard", "--config", str(config_path), "--name", "Alpha Bot"],
+    )
+
+    assert result.exit_code == 0
+    saved = Config.model_validate(json.loads(config_path.read_text(encoding="utf-8")))
+    assert saved.agents.defaults.name == "Alpha Bot"
+    assert saved.workspace_path == expected_workspace
+    assert (expected_workspace / "harness" / "definition.yaml").exists()
+
+
 def test_onboard_wizard_preserves_explicit_config_in_next_steps(tmp_path, monkeypatch):
     config_path = tmp_path / "instance" / "config.json"
     workspace_path = tmp_path / "workspace"
@@ -199,6 +262,276 @@ def test_onboard_wizard_preserves_explicit_config_in_next_steps(tmp_path, monkey
     assert f"nanobot gateway --config {resolved_config}" in compact_output
 
 
+def test_newbot_help_shows_base_dir_and_wizard_options():
+    result = runner.invoke(app, ["newbot", "--help"])
+
+    assert result.exit_code == 0
+    stripped_output = _strip_ansi(result.stdout)
+    assert "--base-dir" in stripped_output
+    assert "--image" in stripped_output
+    assert "--wizard" in stripped_output
+    assert "--no-wizard" in stripped_output
+    assert "--dry-run" in stripped_output
+
+
+def test_newbot_dry_run_uses_docker_for_named_instance(tmp_path):
+    result = runner.invoke(
+        app,
+        ["newbot", "Chris", "--base-dir", str(tmp_path), "--dry-run"],
+    )
+
+    assert result.exit_code == 0
+    instance = resolve_instance_paths("Chris", base_dir=tmp_path)
+    stripped_output = _strip_ansi(result.stdout)
+    assert str(instance.root) in stripped_output
+    assert "docker run" in stripped_output
+    assert "/root/.nanobot/config.json" in stripped_output
+    assert "/root/.nanobot/workspace" in stripped_output
+    assert "--wizard" in stripped_output
+
+
+def test_newbot_can_disable_wizard(tmp_path):
+    result = runner.invoke(
+        app,
+        ["newbot", "Chris", "--base-dir", str(tmp_path), "--no-wizard", "--dry-run"],
+    )
+
+    assert result.exit_code == 0
+    stripped_output = _strip_ansi(result.stdout)
+    assert "--wizard" not in stripped_output
+
+
+def test_newbot_applies_presets_before_onboarding(tmp_path):
+    result = runner.invoke(
+        app,
+        [
+            "newbot",
+            "Chris",
+            "--base-dir",
+            str(tmp_path),
+            "--preset",
+            "telegram",
+            "--preset",
+            "openai-codex-gpt-5.2",
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code == 0
+    instance = resolve_instance_paths("Chris", base_dir=tmp_path)
+    saved = json.loads(instance.config_path.read_text(encoding="utf-8"))
+    assert saved["channels"]["telegram"]["enabled"] is True
+    assert saved["agents"]["defaults"]["provider"] == "openai_codex"
+    assert saved["agents"]["defaults"]["model"] == "openai-codex/gpt-5.2-codex"
+
+
+def test_manage_without_action_fails():
+    result = runner.invoke(app, ["manage", "Chris"])
+
+    assert result.exit_code == 2
+    stripped_output = _strip_ansi(result.stdout)
+    assert "Missing action" in stripped_output
+
+
+def test_manage_config_shows_config_contents(tmp_path):
+    instance = resolve_instance_paths("Chris", base_dir=tmp_path)
+    instance.root.mkdir(parents=True)
+    instance.config_path.write_text('{"providers":{"openai":{"apiKey":"sk-test"}}}', encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        ["manage", "Chris", "--base-dir", str(tmp_path), "config"],
+    )
+
+    assert result.exit_code == 0
+    stripped_output = _strip_ansi(result.stdout)
+    assert str(instance.config_path) in stripped_output
+    assert '"openai"' in stripped_output
+
+
+def test_manage_onboard_dry_run_uses_docker(tmp_path):
+    result = runner.invoke(
+        app,
+        ["manage", "Chris", "--base-dir", str(tmp_path), "--dry-run", "onboard"],
+    )
+
+    assert result.exit_code == 0
+    stripped_output = _strip_ansi(result.stdout)
+    assert "docker run" in stripped_output
+    assert "onboard" in stripped_output
+    assert "--wizard" in stripped_output
+
+
+def test_manage_start_dry_run_builds_gateway_container_command(tmp_path):
+    result = runner.invoke(
+        app,
+        ["manage", "Chris", "--base-dir", str(tmp_path), "--dry-run", "--host-port", "18800", "start"],
+    )
+
+    assert result.exit_code == 0
+    stripped_output = _strip_ansi(result.stdout)
+    assert "docker run -d --name nanochris-chris" in stripped_output
+    assert "-p 18800:18790" in stripped_output
+    assert "gateway" in stripped_output
+
+
+def test_manage_stop_dry_run_uses_container_name(tmp_path):
+    result = runner.invoke(
+        app,
+        ["manage", "Chris", "--base-dir", str(tmp_path), "--dry-run", "stop"],
+    )
+
+    assert result.exit_code == 0
+    stripped_output = _strip_ansi(result.stdout)
+    assert "docker rm -f nanochris-chris" in stripped_output
+
+
+def test_manage_logs_dry_run_uses_container_name(tmp_path):
+    result = runner.invoke(
+        app,
+        ["manage", "Chris", "--base-dir", str(tmp_path), "--dry-run", "logs"],
+    )
+
+    assert result.exit_code == 0
+    stripped_output = _strip_ansi(result.stdout)
+    assert "docker logs -f nanochris-chris" in stripped_output
+
+
+def test_manage_onboard_applies_presets_before_onboarding(tmp_path):
+    result = runner.invoke(
+        app,
+        [
+            "manage",
+            "Chris",
+            "--base-dir",
+            str(tmp_path),
+            "--preset",
+            "telegram",
+            "--preset",
+            "openai-codex-gpt-5.2",
+            "--dry-run",
+            "onboard",
+        ],
+    )
+
+    assert result.exit_code == 0
+    instance = resolve_instance_paths("Chris", base_dir=tmp_path)
+    saved = json.loads(instance.config_path.read_text(encoding="utf-8"))
+    assert saved["channels"]["telegram"]["enabled"] is True
+    assert saved["agents"]["defaults"]["provider"] == "openai_codex"
+
+
+def test_instance_help_shows_management_commands():
+    result = runner.invoke(app, ["instance", "--help"])
+
+    assert result.exit_code == 0
+    stripped_output = _strip_ansi(result.stdout)
+    assert "list" in stripped_output
+    assert "show" in stripped_output
+    assert "onboard" in stripped_output
+    assert "agent" in stripped_output
+    assert "gateway" in stripped_output
+    assert "run" in stripped_output
+    assert "down" in stripped_output
+    assert "logs" in stripped_output
+
+
+def test_instance_show_resolves_named_paths(tmp_path):
+    result = runner.invoke(
+        app,
+        ["instance", "show", "Chris", "--base-dir", str(tmp_path)],
+    )
+
+    assert result.exit_code == 0
+    stripped_output = _strip_ansi(result.stdout)
+    instance = resolve_instance_paths("Chris", base_dir=tmp_path)
+    assert str(instance.config_path) in stripped_output
+    assert str(instance.workspace_path) in stripped_output
+
+
+def test_instance_onboard_dry_run_uses_named_instance(tmp_path):
+    result = runner.invoke(
+        app,
+        ["instance", "onboard", "Chris", "--base-dir", str(tmp_path), "--dry-run"],
+    )
+
+    assert result.exit_code == 0
+    stripped_output = _strip_ansi(result.stdout)
+    instance = resolve_instance_paths("Chris", base_dir=tmp_path)
+    assert str(instance.root) in stripped_output
+    assert "docker run" in stripped_output
+    assert "/root/.nanobot/config.json" in stripped_output
+    assert "/root/.nanobot/workspace" in stripped_output
+    assert "--wizard" in stripped_output
+
+
+def test_instance_agent_dry_run_passes_through_args(tmp_path):
+    result = runner.invoke(
+        app,
+        ["instance", "agent", "Chris", "--base-dir", str(tmp_path), "--dry-run", "-m", "Hello"],
+    )
+
+    assert result.exit_code == 0
+    stripped_output = _strip_ansi(result.stdout)
+    assert "/root/.nanobot/config.json" in stripped_output
+    assert "/root/.nanobot/workspace" in stripped_output
+    assert "agent -m Hello" in stripped_output
+    assert "docker run" in stripped_output
+
+
+def test_instance_gateway_dry_run_builds_container_command(tmp_path):
+    result = runner.invoke(
+        app,
+        [
+            "instance",
+            "gateway",
+            "Chris",
+            "--base-dir",
+            str(tmp_path),
+            "--dry-run",
+            "--host-port",
+            "18800",
+        ],
+    )
+
+    assert result.exit_code == 0
+    stripped_output = _strip_ansi(result.stdout)
+    assert "docker run" in stripped_output
+    assert "--name nanochris-chris" in stripped_output
+    assert "-p 18800:18790" in stripped_output
+    assert "gateway" in stripped_output
+
+
+def test_instance_logs_dry_run_uses_container_name(tmp_path):
+    result = runner.invoke(
+        app,
+        ["instance", "logs", "Chris", "--base-dir", str(tmp_path), "--dry-run"],
+    )
+
+    assert result.exit_code == 0
+    stripped_output = _strip_ansi(result.stdout)
+    assert "docker logs -f nanochris-chris" in stripped_output
+
+
+def test_instance_list_reads_existing_instances(tmp_path):
+    instance = resolve_instance_paths("Chris", base_dir=tmp_path)
+    instance.root.mkdir(parents=True)
+    instance.config_path.write_text(
+        '{"agents": {"defaults": {"name": "Chris"}}}',
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        ["instance", "list", "--base-dir", str(tmp_path)],
+    )
+
+    assert result.exit_code == 0
+    stripped_output = _strip_ansi(result.stdout)
+    assert "chris" in stripped_output
+    assert "Chris" in stripped_output
+
+
 def test_config_matches_github_copilot_codex_with_hyphen_prefix():
     config = Config()
     config.agents.defaults.model = "github-copilot/gpt-5.3-codex"
@@ -211,6 +544,22 @@ def test_config_matches_openai_codex_with_hyphen_prefix():
     config.agents.defaults.model = "openai-codex/gpt-5.1-codex"
 
     assert config.get_provider_name() == "openai_codex"
+
+
+def test_config_uses_openai_sdk_for_openai_models() -> None:
+    config = Config()
+    config.agents.defaults.model = "openai/gpt-4.1"
+    config.providers.openai.api_key = "sk-test"
+
+    assert config.get_provider_name() == "openai"
+
+
+def test_config_uses_anthropic_sdk_for_anthropic_models() -> None:
+    config = Config()
+    config.agents.defaults.model = "anthropic/claude-opus-4-5"
+    config.providers.anthropic.api_key = "sk-ant-test"
+
+    assert config.get_provider_name() == "anthropic"
 
 
 def test_config_dump_excludes_oauth_provider_blocks():
@@ -459,6 +808,20 @@ def test_agent_help_shows_workspace_and_config_options():
     assert "-w" in stripped_output
     assert "--config" in stripped_output
     assert "-c" in stripped_output
+
+
+def test_agent_command_installs_workspace_git_hook(mock_agent_runtime, monkeypatch):
+    seen = {"called": False}
+
+    monkeypatch.setattr(
+        "nanobot.cli.git_hooked.install_workspace_git_hook",
+        lambda: seen.__setitem__("called", True),
+    )
+
+    result = runner.invoke(app, ["agent", "-m", "hello"])
+
+    assert result.exit_code == 0
+    assert seen["called"] is True
 
 
 def test_agent_uses_default_config_when_no_workspace_or_config_flags(mock_agent_runtime):

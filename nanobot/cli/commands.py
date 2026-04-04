@@ -1,6 +1,7 @@
 """CLI commands for nanobot."""
 
 import asyncio
+import subprocess
 from contextlib import contextmanager, nullcontext
 
 import os
@@ -34,14 +35,31 @@ from rich.text import Text
 
 from nanobot import __logo__, __version__
 from nanobot.cli.stream import StreamRenderer, ThinkingSpinner
-from nanobot.config.paths import get_workspace_path, is_default_workspace
+from nanobot.config.presets import apply_presets
+from nanobot.instances import (
+    build_docker_instance_command,
+    build_docker_logs_command,
+    build_docker_remove_command,
+    get_container_config_path,
+    get_container_workspace_path,
+    get_instance_container_name,
+    get_instance_image,
+    resolve_instance_paths,
+    list_instances,
+)
+from nanobot.config.paths import (
+    get_agent_workspace_path,
+    get_workspace_path,
+    is_default_workspace,
+)
 from nanobot.config.schema import Config
-from nanobot.utils.helpers import sync_workspace_templates
+from nanobot.utils.helpers import ensure_workspace_git_root, sync_workspace_templates
 from nanobot.utils.restart import (
     consume_restart_notice_from_env,
     format_restart_completed_message,
     should_show_cli_restart_notice,
 )
+from nanobot.workspace_git import bootstrap_workspace_git
 
 app = typer.Typer(
     name="nanobot",
@@ -244,6 +262,9 @@ def main(
     ),
 ):
     """nanobot - Personal AI Assistant."""
+    from nanobot.cli.git_hooked import install_workspace_git_hook
+
+    install_workspace_git_hook()
     pass
 
 
@@ -252,11 +273,51 @@ def main(
 # ============================================================================
 
 
+def _workspace_follows_agent_name(workspace: Path, name: str | None) -> bool:
+    """Return whether a workspace is still using an auto-derived agent path."""
+    resolved = workspace.expanduser().resolve(strict=False)
+    return (
+        resolved == get_agent_workspace_path(name).resolve(strict=False)
+        or is_default_workspace(resolved)
+    )
+
+
+def _maybe_assign_workspace_from_agent_name(
+    config: Config,
+    *,
+    previous_name: str,
+    previous_workspace: Path,
+) -> None:
+    """Update the workspace only when it is still tracking the generated default."""
+    current_workspace = config.workspace_path
+    if current_workspace.resolve(strict=False) != previous_workspace.resolve(strict=False):
+        return
+    if _workspace_follows_agent_name(previous_workspace, previous_name):
+        config.agents.defaults.workspace = str(get_agent_workspace_path(config.agents.defaults.name))
+
+
 @app.command()
 def onboard(
     workspace: str | None = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
     config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
+    name: str | None = typer.Option(None, "--name", help="Agent name used for the default workspace path"),
     wizard: bool = typer.Option(False, "--wizard", help="Use interactive wizard"),
+    github_token: str | None = typer.Option(
+        None,
+        "--github-token",
+        envvar="NANOBOT_GITHUB_TOKEN",
+        help="GitHub token used to create and publish a private workspace repository",
+    ),
+    github_repo: str | None = typer.Option(
+        None,
+        "--github-repo",
+        help="Optional GitHub repository name. Defaults to the bot name slug.",
+    ),
+    github_private: bool = typer.Option(
+        True,
+        "--github-private/--github-public",
+        help="Create the GitHub workspace repository as private or public",
+    ),
 ):
     """Initialize nanobot configuration and workspace."""
     from nanobot.config.loader import get_config_path, load_config, save_config, set_config_path
@@ -268,33 +329,62 @@ def onboard(
         console.print(f"[dim]Using config: {config_path}[/dim]")
     else:
         config_path = get_config_path()
-
-    def _apply_workspace_override(loaded: Config) -> Config:
-        if workspace:
-            loaded.agents.defaults.workspace = workspace
-        return loaded
+    config_exists = config_path.exists()
+    reset_existing = False
+    refreshed_existing = False
 
     # Create or update config
-    if config_path.exists():
+    if config_exists:
         if wizard:
-            config = _apply_workspace_override(load_config(config_path))
+            config = load_config(config_path)
         else:
             console.print(f"[yellow]Config already exists at {config_path}[/yellow]")
             console.print("  [bold]y[/bold] = overwrite with defaults (existing values will be lost)")
             console.print("  [bold]N[/bold] = refresh config, keeping existing values and adding new fields")
             if typer.confirm("Overwrite?"):
-                config = _apply_workspace_override(Config())
-                save_config(config, config_path)
-                console.print(f"[green]✓[/green] Config reset to defaults at {config_path}")
+                config = Config()
+                reset_existing = True
+                config_exists = False
             else:
-                config = _apply_workspace_override(load_config(config_path))
-                save_config(config, config_path)
-                console.print(f"[green]✓[/green] Config refreshed at {config_path} (existing values preserved)")
+                config = load_config(config_path)
+                refreshed_existing = True
     else:
-        config = _apply_workspace_override(Config())
+        config = Config()
+        config_exists = False
         # In wizard mode, don't save yet - the wizard will handle saving if should_save=True
         if not wizard:
-            save_config(config, config_path)
+            pass
+
+    pre_name = config.agents.defaults.name
+    pre_workspace = config.workspace_path
+    if name:
+        config.agents.defaults.name = name
+    if github_token is not None:
+        config.workspace_git.enabled = True
+        config.workspace_git.github_token = github_token
+        config.workspace_git.private = github_private
+    if github_repo is not None:
+        config.workspace_git.enabled = True
+        config.workspace_git.repo = github_repo
+        config.workspace_git.private = github_private
+    if workspace:
+        config.agents.defaults.workspace = workspace
+    elif not config_exists:
+        config.agents.defaults.workspace = str(get_agent_workspace_path(config.agents.defaults.name))
+    elif name:
+        _maybe_assign_workspace_from_agent_name(
+            config,
+            previous_name=pre_name,
+            previous_workspace=pre_workspace,
+        )
+
+    if not wizard:
+        save_config(config, config_path)
+        if reset_existing:
+            console.print(f"[green]✓[/green] Config reset to defaults at {config_path}")
+        elif refreshed_existing:
+            console.print(f"[green]✓[/green] Config refreshed at {config_path} (existing values preserved)")
+        else:
             console.print(f"[green]✓[/green] Created config at {config_path}")
 
     # Run interactive wizard if enabled
@@ -302,12 +392,20 @@ def onboard(
         from nanobot.cli.onboard import run_onboard
 
         try:
+            wizard_name = config.agents.defaults.name
+            wizard_workspace = config.workspace_path
             result = run_onboard(initial_config=config)
             if not result.should_save:
                 console.print("[yellow]Configuration discarded. No changes were saved.[/yellow]")
                 return
 
             config = result.config
+            if not workspace:
+                _maybe_assign_workspace_from_agent_name(
+                    config,
+                    previous_name=wizard_name,
+                    previous_workspace=wizard_workspace,
+                )
             save_config(config, config_path)
             console.print(f"[green]✓[/green] Config saved at {config_path}")
         except Exception as e:
@@ -323,6 +421,29 @@ def onboard(
         console.print(f"[green]✓[/green] Created workspace at {workspace_path}")
 
     sync_workspace_templates(workspace_path)
+    if ensure_workspace_git_root(workspace_path):
+        console.print(f"[green]✓[/green] Initialized git repository at {workspace_path}")
+    try:
+        result = bootstrap_workspace_git(
+            workspace_path,
+            bot_name=config.agents.defaults.name,
+            config=config.workspace_git,
+        )
+        if result:
+            state = "Created" if result.created_repo else "Using"
+            console.print(
+                f"[green]✓[/green] {state} GitHub repo [cyan]{result.owner}/{result.repo}[/cyan]"
+            )
+            if result.configured_remote:
+                console.print(
+                    f"[green]✓[/green] Configured git remote [cyan]{config.workspace_git.remote}[/cyan]"
+                )
+            if result.pushed:
+                console.print("[green]✓[/green] Published workspace to GitHub")
+            elif result.push_skipped_reason:
+                console.print(f"[yellow]![/yellow] GitHub push skipped: {result.push_skipped_reason}")
+    except Exception as exc:
+        console.print(f"[yellow]![/yellow] GitHub workspace setup skipped: {exc}")
 
     agent_cmd = 'nanobot agent -m "Hello!"'
     gateway_cmd = "nanobot gateway"
@@ -342,6 +463,236 @@ def onboard(
     console.print("\n[dim]Want Telegram/WhatsApp? See: https://github.com/HKUDS/nanobot#-chat-apps[/dim]")
 
 
+@app.command()
+def newbot(
+    name: str = typer.Argument(..., help="Display name for the bot instance"),
+    base_dir: str | None = typer.Option(
+        None,
+        "--base-dir",
+        help="Root directory for named instances (defaults to ~/.nanobot/instances)",
+    ),
+    image: str | None = typer.Option(
+        None,
+        "--image",
+        envvar="NANOCHRIS_DOCKER_IMAGE",
+        help="Docker image to run (defaults to $NANOCHRIS_DOCKER_IMAGE or nanochris:local)",
+    ),
+    preset: list[str] = typer.Option(
+        None,
+        "--preset",
+        help="Preset name or JSON file path to merge into the instance config before onboarding. Repeatable.",
+    ),
+    wizard: bool = typer.Option(
+        True,
+        "--wizard/--no-wizard",
+        help="Run the interactive onboarding wizard immediately",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Print the resolved Docker command without running it",
+    ),
+):
+    """Create a named bot instance and run onboarding for it."""
+    instance = resolve_instance_paths(name, base_dir=base_dir)
+    if preset:
+        apply_presets(instance.config_path, preset)
+    _print_instance_summary(instance)
+    console.print(f"[dim]Container:[/dim] {get_instance_container_name(instance)}")
+    console.print(f"[dim]Image:[/dim] {get_instance_image(image)}")
+    command = build_docker_instance_command(
+        instance,
+        image=image,
+        interactive=True,
+        remove=True,
+        nanobot_args=[
+            "onboard",
+            "--config",
+            get_container_config_path(),
+            "--workspace",
+            get_container_workspace_path(),
+            "--name",
+            instance.name,
+            *(["--wizard"] if wizard else []),
+        ],
+    )
+    raise typer.Exit(_run_instance_command(command, dry_run=dry_run))
+
+
+@app.command(
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
+def manage(
+    ctx: typer.Context,
+    name: str = typer.Argument(..., help="Display name for the bot instance"),
+    base_dir: str | None = typer.Option(
+        None,
+        "--base-dir",
+        help="Root directory for named instances (defaults to ~/.nanobot/instances)",
+    ),
+    image: str | None = typer.Option(
+        None,
+        "--image",
+        envvar="NANOCHRIS_DOCKER_IMAGE",
+        help="Docker image to run (defaults to $NANOCHRIS_DOCKER_IMAGE or nanochris:local)",
+    ),
+    preset: list[str] = typer.Option(
+        None,
+        "--preset",
+        help="Preset name or JSON file path to merge into the instance config before onboarding. Repeatable.",
+    ),
+    host_port: int = typer.Option(
+        18790,
+        "--host-port",
+        help="Host port that maps to the gateway port inside the container",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Print the resolved command without running it",
+    ),
+    follow: bool = typer.Option(
+        True,
+        "--follow/--no-follow",
+        help="Follow logs when using the `logs` action",
+    ),
+):
+    """Manage a named bot instance with a single command surface."""
+    actions = list(ctx.args)
+    if not actions:
+        console.print(
+            "[red]Missing action.[/red] Use one of: onboard, config, start, stop, logs."
+        )
+        raise typer.Exit(2)
+
+    action = actions[0]
+    extra = actions[1:]
+    instance = resolve_instance_paths(name, base_dir=base_dir)
+
+    if action == "config":
+        raise typer.Exit(_show_instance_config(instance))
+
+    _print_instance_summary(instance)
+    console.print(f"[dim]Container:[/dim] {get_instance_container_name(instance)}")
+    console.print(f"[dim]Image:[/dim] {get_instance_image(image)}")
+
+    if action == "onboard":
+        if preset:
+            apply_presets(instance.config_path, preset)
+        wizard = "--no-wizard" not in extra
+        command = build_docker_instance_command(
+            instance,
+            image=image,
+            interactive=True,
+            remove=True,
+            nanobot_args=[
+                "onboard",
+                "--config",
+                get_container_config_path(),
+                "--workspace",
+                get_container_workspace_path(),
+                "--name",
+                instance.name,
+                *(["--wizard"] if wizard else []),
+            ],
+        )
+        raise typer.Exit(_run_instance_command(command, dry_run=dry_run))
+
+    if action == "start":
+        command = build_docker_instance_command(
+            instance,
+            image=image,
+            interactive=False,
+            remove=False,
+            detached=True,
+            host_port=host_port,
+            nanobot_args=[
+                "gateway",
+                *extra,
+                "--config",
+                get_container_config_path(),
+                "--workspace",
+                get_container_workspace_path(),
+            ],
+        )
+        raise typer.Exit(_run_instance_command(command, dry_run=dry_run))
+
+    if action == "stop":
+        command = build_docker_remove_command(instance)
+        raise typer.Exit(_run_instance_command(command, dry_run=dry_run))
+
+    if action == "logs":
+        command = build_docker_logs_command(instance, follow=follow)
+        raise typer.Exit(_run_instance_command(command, dry_run=dry_run))
+
+    if action == "agent":
+        command = build_docker_instance_command(
+            instance,
+            image=image,
+            interactive=True,
+            remove=True,
+            nanobot_args=[
+                "agent",
+                *extra,
+                "--config",
+                get_container_config_path(),
+                "--workspace",
+                get_container_workspace_path(),
+            ],
+        )
+        raise typer.Exit(_run_instance_command(command, dry_run=dry_run))
+
+    if action == "run":
+        command_args = extra or ["agent"]
+        command = build_docker_instance_command(
+            instance,
+            image=image,
+            interactive=True,
+            remove=True,
+            nanobot_args=[
+                *command_args,
+                "--config",
+                get_container_config_path(),
+                "--workspace",
+                get_container_workspace_path(),
+            ],
+        )
+        raise typer.Exit(_run_instance_command(command, dry_run=dry_run))
+
+    console.print(
+        f"[red]Unknown action:[/red] {action} "
+        "[dim](expected one of: onboard, config, start, stop, logs, agent, run)[/dim]"
+    )
+    raise typer.Exit(2)
+
+
+def _print_instance_summary(instance) -> None:
+    """Print a named instance summary."""
+    console.print(f"[dim]Instance:[/dim] {instance.name} ({instance.slug})", soft_wrap=True)
+    console.print(f"[dim]Root:[/dim] {instance.root}", soft_wrap=True)
+    console.print(f"[dim]Config:[/dim] {instance.config_path}", soft_wrap=True)
+    console.print(f"[dim]Workspace:[/dim] {instance.workspace_path}", soft_wrap=True)
+
+
+def _run_instance_command(command: list[str], *, dry_run: bool) -> int:
+    """Print and optionally execute a resolved instance command."""
+    console.print(f"[dim]Command:[/dim] {' '.join(command)}", soft_wrap=True)
+    if dry_run:
+        return 0
+    return subprocess.run(command, check=False).returncode
+
+
+def _show_instance_config(instance) -> int:
+    """Print the config path and current config content for an instance."""
+    _print_instance_summary(instance)
+    if not instance.config_path.exists():
+        console.print("[yellow]Config does not exist yet. Run onboarding first.[/yellow]")
+        return 1
+    console.print()
+    console.print(Text(instance.config_path.read_text(encoding="utf-8")))
+    return 0
+
+
 def _merge_missing_defaults(existing: Any, defaults: Any) -> Any:
     """Recursively fill in missing values from defaults without overwriting user config."""
     if not isinstance(existing, dict) or not isinstance(defaults, dict):
@@ -354,6 +705,301 @@ def _merge_missing_defaults(existing: Any, defaults: Any) -> Any:
         else:
             merged[key] = _merge_missing_defaults(merged[key], value)
     return merged
+
+
+instance_app = typer.Typer(help="Manage named bot instances")
+app.add_typer(instance_app, name="instance")
+
+
+@instance_app.command("list")
+def instance_list(
+    base_dir: str | None = typer.Option(
+        None,
+        "--base-dir",
+        help="Root directory for named instances (defaults to ~/.nanobot/instances)",
+    ),
+):
+    """List discovered named bot instances."""
+    instances = list_instances(base_dir=base_dir)
+    if not instances:
+        console.print("[dim]No instances found.[/dim]")
+        return
+
+    table = Table(title="Named Instances")
+    table.add_column("Slug", style="cyan")
+    table.add_column("Name", style="green")
+    table.add_column("Config", style="magenta")
+    for instance in instances:
+        table.add_row(instance.slug, instance.name, str(instance.config_path))
+    console.print(table)
+
+
+@instance_app.command("show")
+def instance_show(
+    name: str = typer.Argument(..., help="Display name or slug for the bot instance"),
+    base_dir: str | None = typer.Option(
+        None,
+        "--base-dir",
+        help="Root directory for named instances (defaults to ~/.nanobot/instances)",
+    ),
+):
+    """Show resolved paths for a named bot instance."""
+    instance = resolve_instance_paths(name, base_dir=base_dir)
+    _print_instance_summary(instance)
+
+
+@instance_app.command("onboard")
+def instance_onboard(
+    name: str = typer.Argument(..., help="Display name or slug for the bot instance"),
+    base_dir: str | None = typer.Option(
+        None,
+        "--base-dir",
+        help="Root directory for named instances (defaults to ~/.nanobot/instances)",
+    ),
+    image: str | None = typer.Option(
+        None,
+        "--image",
+        envvar="NANOCHRIS_DOCKER_IMAGE",
+        help="Docker image to run (defaults to $NANOCHRIS_DOCKER_IMAGE or nanochris:local)",
+    ),
+    wizard: bool = typer.Option(
+        True,
+        "--wizard/--no-wizard",
+        help="Run the interactive onboarding wizard immediately",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Print the resolved command without running it",
+    ),
+):
+    """Run onboarding for a named bot instance."""
+    instance = resolve_instance_paths(name, base_dir=base_dir)
+    _print_instance_summary(instance)
+    console.print(f"[dim]Container:[/dim] {get_instance_container_name(instance)}")
+    console.print(f"[dim]Image:[/dim] {get_instance_image(image)}")
+    command = build_docker_instance_command(
+        instance,
+        image=image,
+        interactive=True,
+        remove=True,
+        nanobot_args=[
+            "onboard",
+            "--config",
+            get_container_config_path(),
+            "--workspace",
+            get_container_workspace_path(),
+            "--name",
+            instance.name,
+            *(["--wizard"] if wizard else []),
+        ],
+    )
+    raise typer.Exit(_run_instance_command(command, dry_run=dry_run))
+
+
+@instance_app.command(
+    "agent",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
+def instance_agent(
+    ctx: typer.Context,
+    name: str = typer.Argument(..., help="Display name or slug for the bot instance"),
+    base_dir: str | None = typer.Option(
+        None,
+        "--base-dir",
+        help="Root directory for named instances (defaults to ~/.nanobot/instances)",
+    ),
+    image: str | None = typer.Option(
+        None,
+        "--image",
+        envvar="NANOCHRIS_DOCKER_IMAGE",
+        help="Docker image to run (defaults to $NANOCHRIS_DOCKER_IMAGE or nanochris:local)",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Print the resolved command without running it",
+    ),
+):
+    """Run `nanobot agent` for a named bot instance."""
+    instance = resolve_instance_paths(name, base_dir=base_dir)
+    _print_instance_summary(instance)
+    console.print(f"[dim]Container:[/dim] {get_instance_container_name(instance)}")
+    console.print(f"[dim]Image:[/dim] {get_instance_image(image)}")
+    command = build_docker_instance_command(
+        instance,
+        image=image,
+        interactive=True,
+        remove=True,
+        nanobot_args=[
+            "agent",
+            *ctx.args,
+            "--config",
+            get_container_config_path(),
+            "--workspace",
+            get_container_workspace_path(),
+        ],
+    )
+    raise typer.Exit(_run_instance_command(command, dry_run=dry_run))
+
+
+@instance_app.command(
+    "gateway",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
+def instance_gateway(
+    ctx: typer.Context,
+    name: str = typer.Argument(..., help="Display name or slug for the bot instance"),
+    base_dir: str | None = typer.Option(
+        None,
+        "--base-dir",
+        help="Root directory for named instances (defaults to ~/.nanobot/instances)",
+    ),
+    image: str | None = typer.Option(
+        None,
+        "--image",
+        envvar="NANOCHRIS_DOCKER_IMAGE",
+        help="Docker image to run (defaults to $NANOCHRIS_DOCKER_IMAGE or nanochris:local)",
+    ),
+    host_port: int = typer.Option(
+        18790,
+        "--host-port",
+        help="Host port that maps to the gateway port inside the container",
+    ),
+    replace: bool = typer.Option(
+        False,
+        "--replace",
+        help="Stop and remove any existing container for this instance before starting",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Print the resolved command without running it",
+    ),
+):
+    """Run `nanobot gateway` for a named bot instance."""
+    instance = resolve_instance_paths(name, base_dir=base_dir)
+    _print_instance_summary(instance)
+    console.print(f"[dim]Container:[/dim] {get_instance_container_name(instance)}")
+    console.print(f"[dim]Image:[/dim] {get_instance_image(image)}")
+    if replace:
+        remove_command = build_docker_remove_command(instance)
+        remove_code = _run_instance_command(remove_command, dry_run=dry_run)
+        if remove_code != 0 and not dry_run:
+            raise typer.Exit(remove_code)
+
+    command = build_docker_instance_command(
+        instance,
+        image=image,
+        interactive=False,
+        remove=False,
+        detached=True,
+        host_port=host_port,
+        nanobot_args=[
+            "gateway",
+            *ctx.args,
+            "--config",
+            get_container_config_path(),
+            "--workspace",
+            get_container_workspace_path(),
+        ],
+    )
+    raise typer.Exit(_run_instance_command(command, dry_run=dry_run))
+
+
+@instance_app.command(
+    "run",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
+def instance_run(
+    ctx: typer.Context,
+    name: str = typer.Argument(..., help="Display name or slug for the bot instance"),
+    base_dir: str | None = typer.Option(
+        None,
+        "--base-dir",
+        help="Root directory for named instances (defaults to ~/.nanobot/instances)",
+    ),
+    image: str | None = typer.Option(
+        None,
+        "--image",
+        envvar="NANOCHRIS_DOCKER_IMAGE",
+        help="Docker image to run (defaults to $NANOCHRIS_DOCKER_IMAGE or nanochris:local)",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Print the resolved command without running it",
+    ),
+):
+    """Run any nanobot command for a named bot instance."""
+    instance = resolve_instance_paths(name, base_dir=base_dir)
+    _print_instance_summary(instance)
+    console.print(f"[dim]Container:[/dim] {get_instance_container_name(instance)}")
+    console.print(f"[dim]Image:[/dim] {get_instance_image(image)}")
+    command_args = list(ctx.args) or ["agent"]
+    command = build_docker_instance_command(
+        instance,
+        image=image,
+        interactive=True,
+        remove=True,
+        nanobot_args=[
+            *command_args,
+            "--config",
+            get_container_config_path(),
+            "--workspace",
+            get_container_workspace_path(),
+        ],
+    )
+    raise typer.Exit(_run_instance_command(command, dry_run=dry_run))
+
+
+@instance_app.command("down")
+def instance_down(
+    name: str = typer.Argument(..., help="Display name or slug for the bot instance"),
+    base_dir: str | None = typer.Option(
+        None,
+        "--base-dir",
+        help="Root directory for named instances (defaults to ~/.nanobot/instances)",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Print the resolved command without running it",
+    ),
+):
+    """Stop and remove the Docker container for a named bot instance."""
+    instance = resolve_instance_paths(name, base_dir=base_dir)
+    _print_instance_summary(instance)
+    console.print(f"[dim]Container:[/dim] {get_instance_container_name(instance)}")
+    command = build_docker_remove_command(instance)
+    raise typer.Exit(_run_instance_command(command, dry_run=dry_run))
+
+
+@instance_app.command("logs")
+def instance_logs(
+    name: str = typer.Argument(..., help="Display name or slug for the bot instance"),
+    base_dir: str | None = typer.Option(
+        None,
+        "--base-dir",
+        help="Root directory for named instances (defaults to ~/.nanobot/instances)",
+    ),
+    follow: bool = typer.Option(
+        True,
+        "--follow/--no-follow",
+        help="Follow logs from the running container",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Print the resolved command without running it",
+    ),
+):
+    """Show Docker logs for a named bot instance."""
+    instance = resolve_instance_paths(name, base_dir=base_dir)
+    _print_instance_summary(instance)
+    console.print(f"[dim]Container:[/dim] {get_instance_container_name(instance)}")
+    command = build_docker_logs_command(instance, follow=follow)
+    raise typer.Exit(_run_instance_command(command, dry_run=dry_run))
 
 
 def _onboard_plugins(config_path: Path) -> None:
@@ -385,69 +1031,21 @@ def _make_provider(config: Config):
 
     Routing is driven by ``ProviderSpec.backend`` in the registry.
     """
-    from nanobot.providers.base import GenerationSettings
-    from nanobot.providers.registry import find_by_name
+    from nanobot.providers.factory import make_provider
 
-    model = config.agents.defaults.model
-    provider_name = config.get_provider_name(model)
-    p = config.get_provider(model)
-    spec = find_by_name(provider_name) if provider_name else None
-    backend = spec.backend if spec else "openai_compat"
-
-    # --- validation ---
-    if backend == "azure_openai":
-        if not p or not p.api_key or not p.api_base:
+    try:
+        return make_provider(config)
+    except ValueError as exc:
+        if str(exc) == "azure_openai_missing_credentials":
             console.print("[red]Error: Azure OpenAI requires api_key and api_base.[/red]")
             console.print("Set them in ~/.nanobot/config.json under providers.azure_openai section")
             console.print("Use the model field to specify the deployment name.")
-            raise typer.Exit(1)
-    elif backend == "openai_compat" and not model.startswith("bedrock/"):
-        needs_key = not (p and p.api_key)
-        exempt = spec and (spec.is_oauth or spec.is_local or spec.is_direct)
-        if needs_key and not exempt:
+        elif str(exc) == "missing_api_key":
             console.print("[red]Error: No API key configured.[/red]")
             console.print("Set one in ~/.nanobot/config.json under providers section")
-            raise typer.Exit(1)
-
-    # --- instantiation by backend ---
-    if backend == "openai_codex":
-        from nanobot.providers.openai_codex_provider import OpenAICodexProvider
-        provider = OpenAICodexProvider(default_model=model)
-    elif backend == "azure_openai":
-        from nanobot.providers.azure_openai_provider import AzureOpenAIProvider
-        provider = AzureOpenAIProvider(
-            api_key=p.api_key,
-            api_base=p.api_base,
-            default_model=model,
-        )
-    elif backend == "github_copilot":
-        from nanobot.providers.github_copilot_provider import GitHubCopilotProvider
-        provider = GitHubCopilotProvider(default_model=model)
-    elif backend == "anthropic":
-        from nanobot.providers.anthropic_provider import AnthropicProvider
-        provider = AnthropicProvider(
-            api_key=p.api_key if p else None,
-            api_base=config.get_api_base(model),
-            default_model=model,
-            extra_headers=p.extra_headers if p else None,
-        )
-    else:
-        from nanobot.providers.openai_compat_provider import OpenAICompatProvider
-        provider = OpenAICompatProvider(
-            api_key=p.api_key if p else None,
-            api_base=config.get_api_base(model),
-            default_model=model,
-            extra_headers=p.extra_headers if p else None,
-            spec=spec,
-        )
-
-    defaults = config.agents.defaults
-    provider.generation = GenerationSettings(
-        temperature=defaults.temperature,
-        max_tokens=defaults.max_tokens,
-        reasoning_effort=defaults.reasoning_effort,
-    )
-    return provider
+        else:
+            console.print(f"[red]Error: {exc}[/red]")
+        raise typer.Exit(1) from exc
 
 
 def _load_runtime_config(config: str | None = None, workspace: str | None = None) -> Config:
@@ -606,6 +1204,7 @@ def gateway(
     from nanobot.cron.types import CronJob
     from nanobot.heartbeat.service import HeartbeatService
     from nanobot.session.manager import SessionManager
+    from nanobot.update.service import AutoUpdateService
 
     if verbose:
         import logging
@@ -760,6 +1359,12 @@ def gateway(
         timezone=config.agents.defaults.timezone,
     )
 
+    async def on_updated_restart() -> None:
+        console.print("[yellow]Auto-update applied, restarting gateway...[/yellow]")
+        os.execv(sys.executable, [sys.executable, "-m", "nanobot", *sys.argv[1:]])
+
+    updates = AutoUpdateService(config.updates, on_updated=on_updated_restart)
+
     if channels.enabled_channels:
         console.print(f"[green]✓[/green] Channels enabled: {', '.join(channels.enabled_channels)}")
     else:
@@ -770,11 +1375,17 @@ def gateway(
         console.print(f"[green]✓[/green] Cron: {cron_status['jobs']} scheduled jobs")
 
     console.print(f"[green]✓[/green] Heartbeat: every {hb_cfg.interval_s}s")
+    if config.updates.enabled:
+        console.print(
+            f"[green]✓[/green] Auto-update: every {config.updates.interval_s}s "
+            f"({config.updates.mode}, {config.updates.remote}/{config.updates.branch})"
+        )
 
     async def run():
         try:
             await cron.start()
             await heartbeat.start()
+            await updates.start()
             await asyncio.gather(
                 agent.run(),
                 channels.start_all(),
@@ -787,6 +1398,7 @@ def gateway(
             console.print(traceback.format_exc())
         finally:
             await agent.close_mcp()
+            updates.stop()
             heartbeat.stop()
             cron.stop()
             agent.stop()

@@ -26,7 +26,7 @@ def _make_loop():
 
     with patch("nanobot.agent.loop.ContextBuilder"), \
          patch("nanobot.agent.loop.SessionManager"), \
-         patch("nanobot.agent.loop.SubagentManager"):
+         patch("nanobot.agent.loop.SpawnedAgentRuntime"):
         loop = AgentLoop(bus=bus, provider=provider, workspace=workspace)
     return loop, bus
 
@@ -125,8 +125,43 @@ class TestRestartCommand:
         response = await loop._process_message(msg)
 
         assert response is not None
+        assert "/agents" in response.content
         assert "/restart" in response.content
         assert "/status" in response.content
+        assert response.metadata == {"render_as": "text"}
+
+    @pytest.mark.asyncio
+    async def test_agents_command_lists_active_and_archived_records(self):
+        loop, _bus = _make_loop()
+        loop.subagents.list_active = MagicMock(return_value=[
+            {
+                "agent_id": "run-1",
+                "label": "market scan",
+                "status": "running",
+                "created_at": "2026-03-31T10:00:00",
+                "role": "trader",
+            }
+        ])
+        loop.subagents.list_archived = MagicMock(return_value=[
+            {
+                "agent_id": "done-1",
+                "label": "backtest",
+                "status": "completed",
+                "created_at": "2026-03-31T09:00:00",
+                "role": "coder",
+                "result_preview": "Sharpe improved.",
+            }
+        ])
+
+        response = await loop._process_message(
+            InboundMessage(channel="telegram", sender_id="u1", chat_id="c1", content="/agents")
+        )
+
+        assert response is not None
+        assert "Spawned agents for this session:" in response.content
+        assert "market scan" in response.content
+        assert "backtest" in response.content
+        assert "Sharpe improved." in response.content
         assert response.metadata == {"render_as": "text"}
 
     @pytest.mark.asyncio

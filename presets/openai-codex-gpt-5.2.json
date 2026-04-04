@@ -1,0 +1,8 @@
+{
+  "agents": {
+    "defaults": {
+      "provider": "openai_codex",
+      "model": "openai-codex/gpt-5.2-codex"
+    }
+  }
+}

@@ -458,6 +458,43 @@ class TestConfigurePydanticModelDrafts:
 
 
 class TestRunOnboardExitBehavior:
+    def test_main_menu_can_open_github_setup(self, monkeypatch):
+        initial_config = Config()
+
+        responses = iter(
+            [
+                "[H] GitHub Setup",
+                "[S] Save and Exit",
+            ]
+        )
+
+        class FakePrompt:
+            def __init__(self, response):
+                self.response = response
+
+            def ask(self):
+                if isinstance(self.response, BaseException):
+                    raise self.response
+                return self.response
+
+        def fake_select(*_args, **_kwargs):
+            return FakePrompt(next(responses))
+
+        def fake_configure_general_settings(config, section):
+            if section == "GitHub Setup":
+                config.workspace_git.enabled = True
+                config.workspace_git.github_token = "ghp_test"
+
+        monkeypatch.setattr(onboard_wizard, "_show_main_menu_header", lambda: None)
+        monkeypatch.setattr(onboard_wizard, "questionary", SimpleNamespace(select=fake_select))
+        monkeypatch.setattr(onboard_wizard, "_configure_general_settings", fake_configure_general_settings)
+
+        result = run_onboard(initial_config=initial_config)
+
+        assert result.should_save is True
+        assert result.config.workspace_git.enabled is True
+        assert result.config.workspace_git.github_token == "ghp_test"
+
     def test_main_menu_interrupt_can_discard_unsaved_session_changes(self, monkeypatch):
         initial_config = Config()
 

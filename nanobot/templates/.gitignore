@@ -1,0 +1,24 @@
+# Local runtime state
+runtime/
+logs/
+cache/
+traces/
+tmp/
+
+# Secrets and environment
+.env
+.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# Large or raw data
+data/
+raw_data/

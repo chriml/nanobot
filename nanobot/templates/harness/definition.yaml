@@ -1,0 +1,17 @@
+version: 1
+
+global_instructions: |
+  Use the workspace as the source of truth for this agent.
+  Keep work incremental, verifiable, and well-documented.
+  Record important learnings in tracked workspace files rather than only in chat history.
+
+stages:
+  - scope
+  - plan
+  - execute
+  - evaluate
+  - handoff
+
+artifacts:
+  handoff: memory/HANDOFF.md
+  learnings: memory/LEARNINGS.md

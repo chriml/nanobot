@@ -46,7 +46,6 @@ def load_config(config_path: Path | None = None) -> Config:
         except (json.JSONDecodeError, ValueError, pydantic.ValidationError) as e:
             logger.warning(f"Failed to load config from {path}: {e}")
             logger.warning("Using default configuration.")
-
     return Config()
 
 

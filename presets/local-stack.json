@@ -1,0 +1,15 @@
+{
+  "updates": {
+    "enabled": true,
+    "mode": "local_branch",
+    "intervalS": 3600
+  },
+  "tools": {
+    "web": {
+      "search": {
+        "provider": "searxng",
+        "baseUrl": "http://nanochris-searxng:8080"
+      }
+    }
+  }
+}
