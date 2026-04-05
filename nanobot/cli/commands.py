@@ -23,6 +23,7 @@ if sys.platform == "win32":
             pass
 
 import typer
+from loguru import logger
 from prompt_toolkit import PromptSession, print_formatted_text
 from prompt_toolkit.application import run_in_terminal
 from prompt_toolkit.formatted_text import ANSI, HTML
@@ -1251,6 +1252,15 @@ def gateway(
     # Set cron callback (needs agent)
     async def on_cron_job(job: CronJob) -> str | None:
         """Execute a cron job through the agent."""
+        # Dream is an internal job — run directly, not through the agent loop.
+        if job.name == "dream":
+            try:
+                await agent.dream.run()
+                logger.info("Dream cron job completed")
+            except Exception:
+                logger.exception("Dream cron job failed")
+            return None
+
         from nanobot.agent.tools.cron import CronTool
         from nanobot.agent.tools.message import MessageTool
         from nanobot.utils.evaluator import evaluate_response
@@ -1380,6 +1390,21 @@ def gateway(
             f"[green]✓[/green] Auto-update: every {config.updates.interval_s}s "
             f"({config.updates.mode}, {config.updates.remote}/{config.updates.branch})"
         )
+
+    # Register Dream system job (always-on, idempotent on restart)
+    dream_cfg = config.agents.defaults.dream
+    if dream_cfg.model_override:
+        agent.dream.model = dream_cfg.model_override
+    agent.dream.max_batch_size = dream_cfg.max_batch_size
+    agent.dream.max_iterations = dream_cfg.max_iterations
+    from nanobot.cron.types import CronJob, CronPayload
+    cron.register_system_job(CronJob(
+        id="dream",
+        name="dream",
+        schedule=dream_cfg.build_schedule(config.agents.defaults.timezone),
+        payload=CronPayload(kind="system_event"),
+    ))
+    console.print(f"[green]✓[/green] Dream: {dream_cfg.describe_schedule()}")
 
     async def run():
         try:

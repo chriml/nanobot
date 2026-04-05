@@ -2,9 +2,26 @@
 
 from typing import Any
 
-from nanobot.agent.tools.base import Tool
+from nanobot.agent.tools.base import Tool, tool_parameters
+from nanobot.agent.tools.schema import ObjectSchema, StringSchema, tool_parameters_schema
 
 
+@tool_parameters(
+    tool_parameters_schema(
+        task=StringSchema("The task for the subagent to complete"),
+        label=StringSchema("Optional short label for the task (for display)"),
+        role=StringSchema("Optional workspace harness role name for this spawned agent"),
+        model=StringSchema("Optional model override; defaults to the main runtime model"),
+        provider=StringSchema("Optional provider override; defaults to provider auto-resolution"),
+        api_key=StringSchema("Optional API key override for this spawned agent only"),
+        api_base=StringSchema("Optional API base override for this spawned agent only"),
+        extra_headers=ObjectSchema(
+            "Optional provider header overrides for this spawned agent only",
+            additional_properties=StringSchema("Header value"),
+        ),
+        required=["task"],
+    )
+)
 class SpawnTool(Tool):
     """Tool to spawn a background agent for runtime-managed execution."""
 
@@ -33,48 +50,6 @@ class SpawnTool(Tool):
             "For deliverables or existing projects, inspect the workspace first "
             "and use a dedicated subdirectory when helpful."
         )
-
-    @property
-    def parameters(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "task": {
-                    "type": "string",
-                    "description": "The task for the spawned agent to complete",
-                },
-                "label": {
-                    "type": "string",
-                    "description": "Optional short label for the task (for display)",
-                },
-                "role": {
-                    "type": "string",
-                    "description": "Optional workspace harness role name for this spawned agent",
-                },
-                "model": {
-                    "type": "string",
-                    "description": "Optional model override; defaults to the main runtime model",
-                },
-                "provider": {
-                    "type": "string",
-                    "description": "Optional provider override; defaults to provider auto-resolution",
-                },
-                "api_key": {
-                    "type": "string",
-                    "description": "Optional API key override for this spawned agent only",
-                },
-                "api_base": {
-                    "type": "string",
-                    "description": "Optional API base override for this spawned agent only",
-                },
-                "extra_headers": {
-                    "type": "object",
-                    "description": "Optional provider header overrides for this spawned agent only",
-                    "additionalProperties": {"type": "string"},
-                },
-            },
-            "required": ["task"],
-        }
 
     async def execute(
         self,
