@@ -16,7 +16,7 @@ from nanobot.agent.tools.schema import ObjectSchema, StringSchema, tool_paramete
         api_key=StringSchema("Optional API key override for this spawned agent only"),
         api_base=StringSchema("Optional API base override for this spawned agent only"),
         extra_headers=ObjectSchema(
-            "Optional provider header overrides for this spawned agent only",
+            description="Optional provider header overrides for this spawned agent only",
             additional_properties=StringSchema("Header value"),
         ),
         required=["task"],
