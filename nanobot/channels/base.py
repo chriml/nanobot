@@ -22,6 +22,7 @@ class BaseChannel(ABC):
 
     name: str = "base"
     display_name: str = "Base"
+    transcription_provider: str = "groq"
     transcription_api_key: str = ""
 
     def __init__(self, config: Any, bus: MessageBus):
@@ -37,12 +38,17 @@ class BaseChannel(ABC):
         self._running = False
 
     async def transcribe_audio(self, file_path: str | Path) -> str:
-        """Transcribe audio with local Whisper first, then optional Groq fallback."""
+        """Transcribe audio with local Whisper first, then remote fallback when configured."""
         try:
             from nanobot.providers.transcription import (
                 GroqTranscriptionProvider,
                 LocalWhisperTranscriptionProvider,
+                OpenAITranscriptionProvider,
             )
+
+            if self.transcription_provider == "openai":
+                provider = OpenAITranscriptionProvider(api_key=self.transcription_api_key)
+                return await provider.transcribe(file_path)
 
             local_provider = LocalWhisperTranscriptionProvider()
             if not local_provider.is_available():

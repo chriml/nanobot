@@ -1,8 +1,8 @@
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
-# Install Node.js 20 for the WhatsApp bridge and ffmpeg for local Faster-Whisper.
+# Install Node.js 20, ffmpeg for local transcription, and bubblewrap for sandboxed exec.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl ca-certificates gnupg git ffmpeg openssh-client && \
+    apt-get install -y --no-install-recommends curl ca-certificates gnupg git ffmpeg bubblewrap openssh-client && \
     mkdir -p /etc/apt/keyrings && \
     curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg && \
     echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" > /etc/apt/sources.list.d/nodesource.list && \
@@ -33,8 +33,13 @@ RUN git config --global --add url."https://github.com/".insteadOf ssh://git@gith
     npm install && npm run build
 WORKDIR /app
 
-# Create config/cache directories
-RUN mkdir -p /root/.nanobot /root/.cache/whisper
+# Create non-root user and config directory
+RUN useradd -m -u 1000 -s /bin/bash nanobot && \
+    mkdir -p /home/nanobot/.nanobot /home/nanobot/.cache/whisper && \
+    chown -R nanobot:nanobot /home/nanobot /app
+
+USER nanobot
+ENV HOME=/home/nanobot
 
 # Gateway default port
 EXPOSE 18790
