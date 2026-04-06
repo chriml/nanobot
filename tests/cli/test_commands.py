@@ -32,8 +32,6 @@ def mock_paths():
          patch("nanobot.config.loader.load_config") as mock_lc, \
          patch("nanobot.cli.commands.get_workspace_path") as mock_ws, \
          patch("nanobot.cli.commands.ensure_workspace_git_root", return_value=False):
-         patch("nanobot.cli.commands.get_workspace_path") as mock_ws, \
-         patch("nanobot.cli.commands.ensure_workspace_git_root", return_value=False):
         base_dir = Path("./test_onboard_data")
         if base_dir.exists():
             shutil.rmtree(base_dir)

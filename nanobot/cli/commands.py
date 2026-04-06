@@ -1055,9 +1055,6 @@ def _make_provider(config: Config):
         else:
             console.print(f"[red]Error: {exc}[/red]")
         raise typer.Exit(1) from exc
-        else:
-            console.print(f"[red]Error: {exc}[/red]")
-        raise typer.Exit(1) from exc
 
 
 def _load_runtime_config(config: str | None = None, workspace: str | None = None) -> Config:
