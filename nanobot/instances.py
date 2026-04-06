@@ -142,6 +142,13 @@ def get_container_state_dir() -> str:
     return f"{get_container_home()}/.nanobot"
 
 
+def get_container_env(environment: dict[str, str] | None = None) -> dict[str, str]:
+    """Return container env with sane writable defaults for dynamic UID/GID runs."""
+    env = dict(environment or {})
+    env.setdefault("GIT_CONFIG_GLOBAL", f"{get_container_state_dir()}/.gitconfig")
+    return env
+
+
 def get_container_config_path() -> str:
     """Return the config path used inside a per-instance container."""
     return f"{get_container_state_dir()}/config.json"
@@ -196,7 +203,7 @@ def build_docker_instance_command(
         command.extend(["-v", volume_mount])
     for extra_host in extra_hosts or []:
         command.extend(["--add-host", extra_host])
-    for key, value in (environment or {}).items():
+    for key, value in get_container_env(environment).items():
         command.extend(["-e", f"{key}={value}"])
     if host_port is not None:
         command.extend(["-p", f"{host_port}:18790"])
