@@ -18,6 +18,8 @@ from nanobot.instances import (
     build_docker_logs_command,
     build_docker_remove_command,
     get_container_config_path,
+    get_container_home,
+    get_container_state_dir,
     get_container_workspace_path,
     get_instance_container_name,
     get_instance_image,
@@ -93,7 +95,7 @@ def _oauth_host_dir() -> Path:
 def _oauth_volume_mount() -> str:
     oauth_dir = _oauth_host_dir()
     oauth_dir.mkdir(parents=True, exist_ok=True)
-    return f"{oauth_dir.expanduser().resolve(strict=False)}:/root/.local/share/oauth-cli-kit"
+    return f"{oauth_dir.expanduser().resolve(strict=False)}:{get_container_home()}/.local/share/oauth-cli-kit"
 
 
 def _whisper_cache_host_dir() -> Path:
@@ -103,7 +105,7 @@ def _whisper_cache_host_dir() -> Path:
 def _whisper_cache_volume_mount() -> str:
     cache_dir = _whisper_cache_host_dir()
     cache_dir.mkdir(parents=True, exist_ok=True)
-    return f"{cache_dir.expanduser().resolve(strict=False)}:/root/.cache/whisper"
+    return f"{cache_dir.expanduser().resolve(strict=False)}:{get_container_home()}/.cache/whisper"
 
 
 def _shared_service_dir() -> Path:
@@ -413,7 +415,7 @@ def manage(
                 "-it",
                 "--rm",
                 "-v",
-                f"{instance.root.expanduser().resolve(strict=False)}:/root/.nanobot",
+                f"{instance.root.expanduser().resolve(strict=False)}:{get_container_state_dir()}",
                 "-v",
                 _oauth_volume_mount(),
                 "-v",

@@ -112,14 +112,24 @@ def get_instance_image(image: str | None = None) -> str:
     return image or os.environ.get("NANOCHRIS_DOCKER_IMAGE") or "nanochris:local"
 
 
+def get_container_home() -> str:
+    """Return the home directory used inside per-instance containers."""
+    return os.environ.get("NANOCHRIS_CONTAINER_HOME") or "/home/nanobot"
+
+
+def get_container_state_dir() -> str:
+    """Return the base nanobot state directory used inside a per-instance container."""
+    return f"{get_container_home()}/.nanobot"
+
+
 def get_container_config_path() -> str:
     """Return the config path used inside a per-instance container."""
-    return "/root/.nanobot/config.json"
+    return f"{get_container_state_dir()}/config.json"
 
 
 def get_container_workspace_path() -> str:
     """Return the workspace path used inside a per-instance container."""
-    return "/root/.nanobot/workspace"
+    return f"{get_container_state_dir()}/workspace"
 
 
 def build_docker_instance_command(
@@ -155,7 +165,7 @@ def build_docker_instance_command(
     command.extend(
         [
             "-v",
-            f"{instance.root.expanduser().resolve(strict=False)}:/root/.nanobot",
+            f"{instance.root.expanduser().resolve(strict=False)}:{get_container_state_dir()}",
         ]
     )
     for volume_mount in volume_mounts or []:
