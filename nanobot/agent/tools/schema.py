@@ -214,7 +214,11 @@ class ObjectSchema(Schema):
         if self._root_description:
             out["description"] = self._root_description
         if self._additional_properties is not None:
-            out["additionalProperties"] = self._additional_properties
+            out["additionalProperties"] = (
+                self._additional_properties
+                if isinstance(self._additional_properties, bool)
+                else Schema.fragment(self._additional_properties)
+            )
         return out
 
 
