@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from nanobot.agent.memory import Dream, MemoryStore
 from nanobot.agent.runner import AgentRunResult
+from nanobot.providers.base import LLMResponse
 
 
 @pytest.fixture
@@ -95,3 +96,16 @@ class TestDreamRun:
         entries = store.read_unprocessed_history(since_cursor=0)
         assert all(e["cursor"] > 0 for e in entries)
 
+    async def test_does_not_advance_cursor_on_phase1_error_response(self, dream, mock_provider, mock_runner, store):
+        """Dream should stop before phase 2 when phase 1 returns an error response."""
+        store.append_history("event 1")
+        mock_provider.chat_with_retry.return_value = LLMResponse(
+            content="Error calling LLM: OAuth credentials not found.",
+            finish_reason="error",
+        )
+
+        result = await dream.run()
+
+        assert result is False
+        assert store.get_last_dream_cursor() == 0
+        mock_runner.run.assert_not_called()

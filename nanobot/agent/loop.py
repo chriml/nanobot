@@ -181,6 +181,7 @@ class AgentLoop:
         channels_config: ChannelsConfig | None = None,
         timezone: str | None = None,
         hooks: list[AgentHook] | None = None,
+        admin_store: Any | None = None,
     ):
         from nanobot.config.schema import ExecToolConfig, WebToolsConfig
 
@@ -212,6 +213,7 @@ class AgentLoop:
         self._start_time = time.time()
         self._last_usage: dict[str, int] = {}
         self._extra_hooks: list[AgentHook] = hooks or []
+        self._admin_store = admin_store
 
         self.context = ContextBuilder(workspace, timezone=timezone)
         self.sessions = session_manager or SessionManager(workspace)
@@ -393,6 +395,16 @@ class AgentLoop:
             checkpoint_callback=_checkpoint,
         ))
         self._last_usage = result.usage
+        if self._admin_store is not None:
+            try:
+                self._admin_store.record_usage(result.usage or {}, session_key=session.key if session else None)
+                self._admin_store.update_runtime(
+                    status="running",
+                    last_error="" if result.stop_reason != "error" else (result.final_content or "")[:500],
+                    last_session_key=session.key if session else None,
+                )
+            except Exception:
+                logger.exception("Failed to persist admin usage state")
         if result.stop_reason == "max_iterations":
             logger.warning("Max iterations ({}) reached", self.max_iterations)
         elif result.stop_reason == "error":
@@ -402,6 +414,11 @@ class AgentLoop:
     async def run(self) -> None:
         """Run the agent loop, dispatching messages as tasks to stay responsive to /stop."""
         self._running = True
+        if self._admin_store is not None:
+            try:
+                self._admin_store.update_runtime(status="running", last_error="")
+            except Exception:
+                logger.exception("Failed to persist admin runtime start state")
         await self._connect_mcp()
         logger.info("Agent loop started")
 
@@ -418,6 +435,11 @@ class AgentLoop:
                 continue
             except Exception as e:
                 logger.warning("Error consuming inbound message: {}, continuing...", e)
+                if self._admin_store is not None:
+                    try:
+                        self._admin_store.update_runtime(status="degraded", last_error=str(e)[:500])
+                    except Exception:
+                        logger.exception("Failed to persist admin runtime consume error")
                 continue
 
             raw = msg.content.strip()
@@ -484,6 +506,11 @@ class AgentLoop:
                 raise
             except Exception:
                 logger.exception("Error processing message for session {}", msg.session_key)
+                if self._admin_store is not None:
+                    try:
+                        self._admin_store.update_runtime(status="error", last_error=f"session {msg.session_key}: processing failed")
+                    except Exception:
+                        logger.exception("Failed to persist admin runtime dispatch error")
                 await self.bus.publish_outbound(OutboundMessage(
                     channel=msg.channel, chat_id=msg.chat_id,
                     content="Sorry, I encountered an error.",
@@ -510,6 +537,11 @@ class AgentLoop:
     def stop(self) -> None:
         """Stop the agent loop."""
         self._running = False
+        if self._admin_store is not None:
+            try:
+                self._admin_store.update_runtime(status="stopping")
+            except Exception:
+                logger.exception("Failed to persist admin runtime stop state")
         logger.info("Agent loop stopping")
 
     async def _process_message(

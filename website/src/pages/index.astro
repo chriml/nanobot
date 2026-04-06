@@ -1,0 +1,289 @@
+---
+import AdminLayout from "../layouts/AdminLayout.astro";
+---
+
+<AdminLayout title="Nanobot Admin">
+  <section class="hero">
+    <span class="eyebrow">Nanobot Control Plane</span>
+    <h1>One admin for every containerized bot.</h1>
+    <p>
+      Each bot keeps its own SQLite state and UI bricks. This dashboard aggregates them,
+      exposes lifecycle actions, and links straight into the per-bot view.
+    </p>
+  </section>
+
+  <div class="stack">
+    <section class="grid cards" id="summary"></section>
+
+    <section class="shell-grid">
+      <div class="panel strong">
+        <div class="section-head">
+          <div>
+            <h2>Global UI Chat</h2>
+            <p>Talk to the admin shell here. This is the only repo-owned UI surface.</p>
+          </div>
+          <span class="badge">scope global</span>
+        </div>
+        <div class="chat-shell">
+          <div class="chat-log" id="global-chat-log">
+            <div class="chat-bubble assistant">
+              This chat belongs to the shared nanobot admin shell. Keep bot-specific page edits inside each bot workspace.
+            </div>
+          </div>
+          <form class="composer" id="global-chat-form">
+            <textarea id="global-chat-input" placeholder="Ask the UI agent to change the shared shell..."></textarea>
+            <div class="actions">
+              <span class="small muted" id="global-chat-status">Ready.</span>
+              <button type="submit">Send</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="section-head">
+          <div>
+            <h2>Shell Contract</h2>
+            <p>The main repo owns the shell. Each bot owns its mutable page outside git.</p>
+          </div>
+        </div>
+        <div class="stack small muted">
+          <div class="row">
+            <span>Global admin</span>
+            <strong>tracked</strong>
+          </div>
+          <div class="row">
+            <span>Bot page shell</span>
+            <strong>tracked</strong>
+          </div>
+          <div class="row">
+            <span>Bot-owned page area</span>
+            <strong>workspace only</strong>
+          </div>
+          <div class="row">
+            <span>Bot UI path</span>
+            <strong>`.nanobot-admin/ui/`</strong>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel strong">
+      <div class="section-head">
+        <div>
+          <h2>Spawn a bot</h2>
+          <p>Create a named instance and optionally start its container immediately.</p>
+        </div>
+        <p class="small muted" id="create-status">Ready.</p>
+      </div>
+
+      <form id="create-form">
+        <div class="form-grid">
+          <input id="bot-name" name="name" placeholder="Bot name" required />
+          <input id="bot-presets" name="presets" placeholder="Presets (comma separated)" />
+          <input id="bot-port" name="hostPort" placeholder="Gateway port" inputmode="numeric" />
+        </div>
+        <div class="actions">
+          <label class="badge">
+            <input id="bot-auto-start" type="checkbox" checked />
+            Auto-start container
+          </label>
+          <button type="submit">Create bot</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="panel">
+      <div class="section-head">
+        <div>
+          <h2>Fleet</h2>
+          <p>All discovered bots with native actions and links to their own UI bricks.</p>
+        </div>
+        <button class="secondary" id="refresh">Refresh</button>
+      </div>
+      <div class="bot-list" id="bot-list">
+        <div class="empty">Loading bots...</div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const summaryEl = document.querySelector("#summary");
+    const botListEl = document.querySelector("#bot-list");
+    const refreshButton = document.querySelector("#refresh");
+    const createForm = document.querySelector("#create-form");
+    const createStatus = document.querySelector("#create-status");
+    const globalChatForm = document.querySelector("#global-chat-form");
+    const globalChatInput = document.querySelector("#global-chat-input");
+    const globalChatLog = document.querySelector("#global-chat-log");
+    const globalChatStatus = document.querySelector("#global-chat-status");
+
+    function badgeClass(status) {
+      return `badge ${String(status || "unknown").toLowerCase()}`;
+    }
+
+    function formatNumber(value) {
+      return new Intl.NumberFormat().format(Number(value || 0));
+    }
+
+    function formatTime(value) {
+      if (!value) return "Unknown";
+      return new Date(Number(value) * 1000).toLocaleString();
+    }
+
+    async function runAction(slug, action, button) {
+      const previous = button.textContent;
+      button.disabled = true;
+      button.textContent = `${action}...`;
+      try {
+        const response = await fetch(`/admin/api/bots/${slug}/actions/${action}`, {
+          method: "POST",
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "Action failed");
+        await loadOverview();
+      } catch (error) {
+        window.alert(error.message);
+      } finally {
+        button.disabled = false;
+        button.textContent = previous;
+      }
+    }
+
+    function appendChat(log, role, content) {
+      const bubble = document.createElement("div");
+      bubble.className = `chat-bubble ${role}`;
+      bubble.textContent = content;
+      log.appendChild(bubble);
+      log.scrollTop = log.scrollHeight;
+    }
+
+    async function sendShellChat(message) {
+      const response = await fetch("/admin/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scope: "global", message }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || "Chat failed");
+      }
+      return payload.content;
+    }
+
+    function renderSummary(data) {
+      const metrics = [
+        ["Bots", data.summary.totalBots],
+        ["Running", data.summary.runningBots],
+        ["Stopped", data.summary.stoppedBots],
+        ["Docker", data.summary.dockerAvailable ? "online" : "offline"],
+      ];
+      summaryEl.innerHTML = metrics.map(([label, value]) => `
+        <article class="panel metric">
+          <span class="eyebrow">${label}</span>
+          <strong class="metric-value">${value}</strong>
+        </article>
+      `).join("");
+    }
+
+    function renderBots(bots) {
+      if (!bots.length) {
+        botListEl.innerHTML = `<div class="empty">No bots discovered yet.</div>`;
+        return;
+      }
+
+      botListEl.innerHTML = bots.map((bot) => `
+        <article class="bot-card">
+          <div class="bot-top">
+            <div>
+              <h3>${bot.name}</h3>
+              <p class="small muted">${bot.model || "No model configured"} · ${bot.mode}</p>
+            </div>
+            <span class="${badgeClass(bot.status)}">${bot.status}</span>
+          </div>
+          <div class="row small muted">
+            <span>${bot.containerName}</span>
+            <span>${bot.workspacePath}</span>
+          </div>
+          <div class="row">
+            <span class="badge">tokens ${formatNumber(bot.lastUsage.total_tokens)}</span>
+            <span class="badge">runs ${formatNumber(bot.totalRuns)}</span>
+            <span class="badge">updated ${formatTime(bot.updatedAt)}</span>
+          </div>
+          <div class="actions">
+            <div class="actions">
+              <button class="secondary" data-action="start" data-slug="${bot.slug}">Start</button>
+              <button class="secondary" data-action="stop" data-slug="${bot.slug}">Stop</button>
+              <button class="secondary" data-action="restart" data-slug="${bot.slug}">Restart</button>
+            </div>
+            <a class="badge running" href="/admin/bot/${bot.slug}">Open bot</a>
+          </div>
+        </article>
+      `).join("");
+
+      botListEl.querySelectorAll("button[data-action]").forEach((button) => {
+        button.addEventListener("click", () => runAction(button.dataset.slug, button.dataset.action, button));
+      });
+    }
+
+    async function loadOverview() {
+      const response = await fetch("/admin/api/overview");
+      if (!response.ok) {
+        botListEl.innerHTML = `<div class="empty">Failed to load admin overview.</div>`;
+        return;
+      }
+      const payload = await response.json();
+      renderSummary(payload);
+      renderBots(payload.bots || []);
+    }
+
+    createForm?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = new FormData(createForm);
+      createStatus.textContent = "Creating...";
+      try {
+        const response = await fetch("/admin/api/bots", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: form.get("name"),
+            presets: String(form.get("presets") || "")
+              .split(",")
+              .map((value) => value.trim())
+              .filter(Boolean),
+            hostPort: form.get("hostPort") ? Number(form.get("hostPort")) : null,
+            autoStart: document.querySelector("#bot-auto-start")?.checked ?? false,
+          }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "Create failed");
+        createForm.reset();
+        document.querySelector("#bot-auto-start").checked = true;
+        createStatus.textContent = payload.started ? `Created and started ${payload.slug}.` : `Created ${payload.slug}.`;
+        await loadOverview();
+      } catch (error) {
+        createStatus.textContent = error.message;
+      }
+    });
+
+    globalChatForm?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const message = globalChatInput.value.trim();
+      if (!message) return;
+      appendChat(globalChatLog, "user", message);
+      globalChatInput.value = "";
+      globalChatStatus.textContent = "Waiting for shell...";
+      try {
+        const content = await sendShellChat(message);
+        appendChat(globalChatLog, "assistant", content);
+        globalChatStatus.textContent = "Ready.";
+      } catch (error) {
+        appendChat(globalChatLog, "assistant", `Error: ${error.message}`);
+        globalChatStatus.textContent = error.message;
+      }
+    });
+
+    refreshButton?.addEventListener("click", loadOverview);
+    loadOverview();
+  </script>
+</AdminLayout>

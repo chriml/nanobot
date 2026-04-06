@@ -5,6 +5,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from nanobot.agent.memory import Consolidator, MemoryStore
+from nanobot.providers.base import LLMResponse
 
 
 @pytest.fixture
@@ -56,6 +57,19 @@ class TestConsolidatorSummarize:
         messages = [{"role": "user", "content": "hello"}]
         result = await consolidator.archive(messages)
         assert result is True  # always succeeds
+        entries = store.read_unprocessed_history(since_cursor=0)
+        assert len(entries) == 1
+        assert "[RAW]" in entries[0]["content"]
+
+    async def test_summarize_raw_dumps_on_error_response(self, consolidator, mock_provider, store):
+        """Provider error responses should degrade like hard failures."""
+        mock_provider.chat_with_retry.return_value = LLMResponse(
+            content="Error calling LLM: OAuth credentials not found.",
+            finish_reason="error",
+        )
+        messages = [{"role": "user", "content": "hello"}]
+        result = await consolidator.archive(messages)
+        assert result is True
         entries = store.read_unprocessed_history(since_cursor=0)
         assert len(entries) == 1
         assert "[RAW]" in entries[0]["content"]

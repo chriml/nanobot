@@ -21,13 +21,17 @@ RUN mkdir -p nanobot bridge && touch nanobot/__init__.py && \
 
 COPY nanobot/ nanobot/
 COPY bridge/ bridge/
+COPY website/ website/
 RUN uv pip install --system --no-cache . && \
     uv pip install --system --no-cache faster-whisper
 
-RUN git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+RUN git config --global --add url."https://github.com/".insteadOf ssh://git@github.com/ && \
+    git config --global --add url."https://github.com/".insteadOf git@github.com:
 
 WORKDIR /app/bridge
 RUN npm install && npm run build
+WORKDIR /app/website
+RUN npm install && npm run build && cp -R dist /app/admin-ui
 WORKDIR /app
 
 RUN mkdir -p /root/.nanobot

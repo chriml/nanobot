@@ -24,6 +24,14 @@ if TYPE_CHECKING:
     from nanobot.session.manager import Session, SessionManager
 
 
+def _unwrap_llm_text(response: Any, *, phase: str) -> str:
+    """Return successful LLM text or raise with provider error content."""
+    if getattr(response, "finish_reason", None) == "error":
+        detail = (getattr(response, "content", None) or "").strip() or "unknown provider error"
+        raise RuntimeError(f"{phase}: {detail}")
+    return response.content or ""
+
+
 # ---------------------------------------------------------------------------
 # MemoryStore — pure file I/O layer
 # ---------------------------------------------------------------------------
@@ -440,7 +448,7 @@ class Consolidator:
                 tools=None,
                 tool_choice=None,
             )
-            summary = response.content or "[no summary]"
+            summary = _unwrap_llm_text(response, phase="consolidation summary") or "[no summary]"
             self.store.append_history(summary)
             return True
         except Exception:
@@ -602,7 +610,7 @@ class Dream:
                 tools=None,
                 tool_choice=None,
             )
-            analysis = phase1_response.content or ""
+            analysis = _unwrap_llm_text(phase1_response, phase="dream phase 1")
             logger.debug("Dream Phase 1 complete ({} chars)", len(analysis))
         except Exception:
             logger.exception("Dream Phase 1 failed")

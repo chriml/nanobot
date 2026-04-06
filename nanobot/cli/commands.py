@@ -45,6 +45,7 @@ from nanobot.instances import (
     get_container_workspace_path,
     get_instance_container_name,
     get_instance_image,
+    get_instances_dir,
     resolve_instance_paths,
     list_instances,
 )
@@ -1099,6 +1100,12 @@ def _warn_deprecated_config_keys(config_path: Path | None) -> None:
         )
 
 
+def _resolve_instances_dir() -> Path | None:
+    """Return the named-instance root when available on this machine/container."""
+    path = get_instances_dir()
+    return path if path.exists() else None
+
+
 def _migrate_cron_store(config: "Config") -> None:
     """One-time migration: move legacy global cron store into the workspace."""
     from nanobot.config.paths import get_cron_dir
@@ -1134,6 +1141,8 @@ def serve(
         raise typer.Exit(1)
 
     from loguru import logger
+    from nanobot.config.loader import get_config_path
+    from nanobot.admin.service import BotAdminService
     from nanobot.agent.loop import AgentLoop
     from nanobot.api.server import create_app
     from nanobot.bus.queue import MessageBus
@@ -1145,6 +1154,7 @@ def serve(
         logger.disable("nanobot")
 
     runtime_config = _load_runtime_config(config, workspace)
+    config_path = Path(config).expanduser() if config else get_config_path()
     api_cfg = runtime_config.api
     host = host if host is not None else api_cfg.host
     port = port if port is not None else api_cfg.port
@@ -1153,6 +1163,15 @@ def serve(
     bus = MessageBus()
     provider = _make_provider(runtime_config)
     session_manager = SessionManager(runtime_config.workspace_path)
+    admin_service = BotAdminService(
+        workspace=runtime_config.workspace_path,
+        bot_name=runtime_config.agents.defaults.name,
+        model=runtime_config.agents.defaults.model,
+        mode="serve",
+        config_path=config_path,
+        instances_dir=_resolve_instances_dir(),
+        loop=None,
+    )
     agent_loop = AgentLoop(
         bus=bus,
         provider=provider,
@@ -1170,7 +1189,9 @@ def serve(
         mcp_servers=runtime_config.tools.mcp_servers,
         channels_config=runtime_config.channels,
         timezone=runtime_config.agents.defaults.timezone,
+        admin_store=admin_service.store,
     )
+    admin_service.loop = agent_loop
 
     model_name = runtime_config.agents.defaults.model
     console.print(f"{__logo__} Starting OpenAI-compatible API server")
@@ -1178,6 +1199,7 @@ def serve(
     console.print(f"  [cyan]Model[/cyan]    : {model_name}")
     console.print("  [cyan]Session[/cyan]  : api:default")
     console.print(f"  [cyan]Timeout[/cyan]  : {timeout}s")
+    console.print(f"  [cyan]Admin[/cyan]    : http://{host}:{port}/admin")
     if host in {"0.0.0.0", "::"}:
         console.print(
             "[yellow]Warning:[/yellow] API is bound to all interfaces. "
@@ -1185,12 +1207,18 @@ def serve(
         )
     console.print()
 
-    api_app = create_app(agent_loop, model_name=model_name, request_timeout=timeout)
+    api_app = create_app(
+        agent_loop,
+        model_name=model_name,
+        request_timeout=timeout,
+        admin_service=admin_service,
+    )
 
     async def on_startup(_app):
         await agent_loop._connect_mcp()
 
     async def on_cleanup(_app):
+        admin_service.store.update_runtime(status="stopped")
         await agent_loop.close_mcp()
 
     api_app.on_startup.append(on_startup)
@@ -1212,9 +1240,13 @@ def gateway(
     config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
 ):
     """Start the nanobot gateway."""
+    from aiohttp import web
+    from nanobot.admin.server import create_admin_app
+    from nanobot.admin.service import BotAdminService
     from nanobot.agent.loop import AgentLoop
     from nanobot.bus.queue import MessageBus
     from nanobot.channels.manager import ChannelManager
+    from nanobot.config.loader import get_config_path
     from nanobot.cron.service import CronService
     from nanobot.cron.types import CronJob
     from nanobot.heartbeat.service import HeartbeatService
@@ -1226,7 +1258,9 @@ def gateway(
 
         logging.basicConfig(level=logging.DEBUG)
 
+    config_path = Path(config).expanduser() if config else get_config_path()
     config = _load_runtime_config(config, workspace)
+    gateway_host = config.gateway.host
     port = port if port is not None else config.gateway.port
 
     console.print(f"{__logo__} Starting nanobot gateway version {__version__} on port {port}...")
@@ -1234,6 +1268,16 @@ def gateway(
     bus = MessageBus()
     provider = _make_provider(config)
     session_manager = SessionManager(config.workspace_path)
+    admin_service = BotAdminService(
+        workspace=config.workspace_path,
+        bot_name=config.agents.defaults.name,
+        model=config.agents.defaults.model,
+        mode="gateway",
+        config_path=config_path,
+        instances_dir=_resolve_instances_dir(),
+        image=get_instance_image(),
+        loop=None,
+    )
 
     # Preserve existing single-workspace installs, but keep custom workspaces clean.
     if is_default_workspace(config.workspace_path):
@@ -1262,7 +1306,9 @@ def gateway(
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
         timezone=config.agents.defaults.timezone,
+        admin_store=admin_service.store,
     )
+    admin_service.loop = agent
 
     # Set cron callback (needs agent)
     async def on_cron_job(job: CronJob) -> str | None:
@@ -1406,6 +1452,7 @@ def gateway(
             f"[green]✓[/green] Auto-update: every {config.updates.interval_s}s "
             f"({config.updates.mode}, {config.updates.remote}/{config.updates.branch})"
         )
+    console.print(f"[green]✓[/green] Admin: http://{gateway_host}:{port}/admin")
 
     # Register Dream system job (always-on, idempotent on restart)
     dream_cfg = config.agents.defaults.dream
@@ -1423,7 +1470,12 @@ def gateway(
     console.print(f"[green]✓[/green] Dream: {dream_cfg.describe_schedule()}")
 
     async def run():
+        admin_app = create_admin_app(admin_service)
+        runner = web.AppRunner(admin_app)
         try:
+            await runner.setup()
+            site = web.TCPSite(runner, gateway_host, port)
+            await site.start()
             await cron.start()
             await heartbeat.start()
             await updates.start()
@@ -1439,6 +1491,8 @@ def gateway(
             console.print("\n[red]Error: Gateway crashed unexpectedly[/red]")
             console.print(traceback.format_exc())
         finally:
+            admin_service.store.update_runtime(status="stopped")
+            await runner.cleanup()
             await agent.close_mcp()
             updates.stop()
             heartbeat.stop()

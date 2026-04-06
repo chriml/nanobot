@@ -1,0 +1,457 @@
+---
+import AdminLayout from "../../layouts/AdminLayout.astro";
+---
+
+<AdminLayout title="Nanobot Bot Admin">
+  <section class="hero">
+    <span class="eyebrow">Per-Bot View</span>
+    <h1 id="bot-title">Loading bot...</h1>
+    <p id="bot-subtitle">Resolving native bricks and runtime state.</p>
+  </section>
+
+  <div class="stack">
+    <section class="grid cards" id="status-grid">
+      <div class="panel metric">
+        <span class="eyebrow">Status</span>
+        <strong class="metric-value">...</strong>
+      </div>
+    </section>
+
+    <section class="shell-grid">
+      <div class="stack">
+        <section class="panel strong">
+          <div class="section-head">
+            <div>
+              <h2>Bot UI Runtime</h2>
+              <p>This mount loads the selected bot's published UI bundle into the shell without an iframe.</p>
+            </div>
+            <a class="badge" href="/admin">Back to fleet</a>
+          </div>
+          <div class="mount-shell">
+            <div class="bot-ui-host" id="bot-ui-host" aria-live="polite"></div>
+          </div>
+          <div class="row small muted">
+            <span>UI source</span>
+            <strong id="bot-ui-path">Loading...</strong>
+          </div>
+          <div class="row small muted">
+            <span>Published bundle</span>
+            <strong id="bot-ui-dist">Loading...</strong>
+          </div>
+          <div class="row small muted">
+            <span>Bundle status</span>
+            <strong id="bot-ui-status">Loading...</strong>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="section-head">
+            <div>
+              <h2>Bot shell data</h2>
+              <p>The shell still renders native runtime data, but the bot-owned page is isolated.</p>
+            </div>
+          </div>
+          <div class="grid cards" id="brick-grid"></div>
+        </section>
+      </div>
+
+      <section class="panel">
+        <div class="section-head">
+          <div>
+            <h2>Bot Channel</h2>
+            <p>Direct channel to this bot runtime for page-specific requests and coordination.</p>
+          </div>
+          <span class="badge">scope bot</span>
+        </div>
+        <div class="chat-shell">
+          <div class="chat-log" id="bot-chat-log">
+            <div class="chat-bubble assistant">
+              This channel talks to the current bot runtime. Use it to request bot-page UI changes and ship a new bundle.
+            </div>
+          </div>
+          <form class="composer" id="bot-chat-form">
+            <textarea id="bot-chat-input" placeholder="Ask for a new UI for this bot page..."></textarea>
+            <div class="actions">
+              <span class="small muted" id="bot-chat-status">Ready.</span>
+              <button type="submit">Send</button>
+            </div>
+          </form>
+        </div>
+      </section>
+    </section>
+
+    <section class="panel">
+      <div class="section-head">
+        <div>
+          <h2>Logs</h2>
+          <p>Tail of the container logs for this bot.</p>
+        </div>
+        <button class="secondary" id="reload-logs">Reload logs</button>
+      </div>
+      <div class="terminal" id="logs">Loading logs...</div>
+    </section>
+  </div>
+
+  <script>
+    const titleEl = document.querySelector("#bot-title");
+    const subtitleEl = document.querySelector("#bot-subtitle");
+    const statusGrid = document.querySelector("#status-grid");
+    const brickGrid = document.querySelector("#brick-grid");
+    const logsEl = document.querySelector("#logs");
+    const reloadLogs = document.querySelector("#reload-logs");
+    const botChatLog = document.querySelector("#bot-chat-log");
+    const botChatForm = document.querySelector("#bot-chat-form");
+    const botChatInput = document.querySelector("#bot-chat-input");
+    const botChatStatus = document.querySelector("#bot-chat-status");
+    const botUiHost = document.querySelector("#bot-ui-host");
+    const botUiPath = document.querySelector("#bot-ui-path");
+    const botUiDist = document.querySelector("#bot-ui-dist");
+    const botUiStatus = document.querySelector("#bot-ui-status");
+
+    let currentBot = null;
+    let currentUiVersion = "";
+    let currentUnmount = null;
+    let currentPollTimer = null;
+
+    function currentSlug() {
+      const path = window.location.pathname.replace(/\/+$/, "");
+      const parts = path.split("/").filter(Boolean);
+      const botIndex = parts.indexOf("bot");
+      const slugFromPath = botIndex >= 0 ? parts[botIndex + 1] : "";
+      return slugFromPath || new URLSearchParams(window.location.search).get("slug") || "";
+    }
+
+    function formatNumber(value) {
+      return new Intl.NumberFormat().format(Number(value || 0));
+    }
+
+    function formatTime(value) {
+      if (!value) return "Unknown";
+      return new Date(Number(value) * 1000).toLocaleString();
+    }
+
+    function renderStatus(bot) {
+      const items = [
+        ["Status", bot.status],
+        ["Model", bot.model || "Unknown"],
+        ["Mode", bot.mode],
+        ["Runs", formatNumber(bot.totalRuns)],
+        ["Prompt tokens", formatNumber(bot.lastUsage.prompt_tokens)],
+        ["Completion tokens", formatNumber(bot.lastUsage.completion_tokens)],
+        ["Updated", formatTime(bot.updatedAt)],
+        ["Database", bot.databasePath],
+      ];
+      statusGrid.innerHTML = items.map(([label, value]) => `
+        <article class="panel metric">
+          <span class="eyebrow">${label}</span>
+          <strong>${value}</strong>
+        </article>
+      `).join("");
+    }
+
+    function renderBrick(brick) {
+      const payload = brick.payload || {};
+      const entries = Object.entries(payload);
+      return `
+        <article class="panel">
+          <div class="section-head">
+            <div>
+              <h3>${brick.title}</h3>
+              <p class="small muted">${brick.kind}</p>
+            </div>
+          </div>
+          ${entries.length ? entries.map(([key, value]) => `
+            <div class="row small">
+              <span class="muted">${key}</span>
+              <strong>${Array.isArray(value) ? value.length : value}</strong>
+            </div>
+          `).join("") : `<div class="empty">No payload.</div>`}
+        </article>
+      `;
+    }
+
+    function appendChat(log, role, content) {
+      const bubble = document.createElement("div");
+      bubble.className = `chat-bubble ${role}`;
+      bubble.textContent = content;
+      log.appendChild(bubble);
+      log.scrollTop = log.scrollHeight;
+    }
+
+    function escapeHtml(value) {
+      return String(value || "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+    }
+
+    function stopUiPolling() {
+      if (currentPollTimer) {
+        window.clearInterval(currentPollTimer);
+        currentPollTimer = null;
+      }
+    }
+
+    async function unmountBotUi() {
+      try {
+        if (typeof currentUnmount === "function") {
+          await currentUnmount();
+        }
+      } catch (_error) {
+        // Keep teardown best-effort so a broken plugin cannot wedge the shell.
+      }
+      currentUnmount = null;
+    }
+
+    function uiShadowRoot() {
+      return botUiHost.shadowRoot || botUiHost.attachShadow({ mode: "open" });
+    }
+
+    function renderUiMessage(title, body, tone = "neutral") {
+      const root = uiShadowRoot();
+      root.innerHTML = `
+        <style>
+          :host { all: initial; }
+          .state {
+            min-height: 360px;
+            display: grid;
+            place-items: center;
+            padding: 28px;
+            font-family: "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif;
+            background: linear-gradient(180deg, #fffdf8 0%, #f6efe1 100%);
+            color: #1f1a11;
+          }
+          .card {
+            width: min(560px, 100%);
+            border: 1px solid rgba(36, 30, 19, 0.12);
+            border-radius: 24px;
+            background: rgba(255, 252, 247, 0.94);
+            box-shadow: 0 20px 44px rgba(72, 49, 17, 0.12);
+            padding: 24px;
+          }
+          h3 {
+            margin: 0 0 10px;
+            font: 700 1.4rem/1.1 "Avenir Next Condensed", "Arial Narrow", sans-serif;
+          }
+          p {
+            margin: 0;
+            color: ${tone === "danger" ? "#8c1f1f" : "#655a49"};
+            line-height: 1.5;
+          }
+        </style>
+        <div class="state">
+          <div class="card">
+            <h3>${escapeHtml(title)}</h3>
+            <p>${escapeHtml(body)}</p>
+          </div>
+        </div>
+      `;
+    }
+
+    async function loadBotUiMeta(slug) {
+      const response = await fetch(`/admin/api/bots/${slug}/ui`);
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || "Failed to load bot UI metadata.");
+      }
+      return payload.ui || {};
+    }
+
+    function createBotUiContext(bot) {
+      return Object.freeze({
+        bot: Object.freeze({
+          slug: bot.slug,
+          name: bot.name,
+          model: bot.model,
+          mode: bot.mode,
+          status: bot.status,
+        }),
+        routes: Object.freeze({
+          detail: `/admin/api/bots/${bot.slug}`,
+          logs: `/admin/api/bots/${bot.slug}/logs`,
+        }),
+      });
+    }
+
+    async function mountBotUi(bot, uiMeta) {
+      botUiHost.dataset.loading = "true";
+      botUiStatus.textContent = `${uiMeta.status || "unknown"} · v${uiMeta.version || "0"}`;
+
+      if (!uiMeta.exists || !uiMeta.entryUrl) {
+        await unmountBotUi();
+        currentUiVersion = uiMeta.version || "0";
+        renderUiMessage(
+          "No bot UI published yet",
+          `Build and publish ${uiMeta.entry || "entry.js"} from this bot workspace to mount it here.`,
+        );
+        botUiHost.dataset.loading = "false";
+        return;
+      }
+
+      await unmountBotUi();
+      const root = uiShadowRoot();
+      const mountPoint = document.createElement("div");
+      mountPoint.setAttribute("data-bot-ui-root", "true");
+
+      const cssHref = uiMeta.cssUrl || "";
+      root.replaceChildren();
+      if (cssHref) {
+        const link = document.createElement("link");
+        link.rel = "stylesheet";
+        link.href = `${cssHref}?v=${encodeURIComponent(uiMeta.version || "0")}`;
+        root.appendChild(link);
+      }
+      root.appendChild(mountPoint);
+
+      try {
+        const module = await import(`${uiMeta.entryUrl}?v=${encodeURIComponent(uiMeta.version || "0")}`);
+        if (typeof module.mount !== "function") {
+          throw new Error("Bot UI bundle must export a mount(container, context) function.");
+        }
+        const maybeUnmount = await module.mount(mountPoint, createBotUiContext(bot));
+        currentUnmount = async () => {
+          if (typeof maybeUnmount === "function") {
+            await maybeUnmount();
+          } else if (maybeUnmount && typeof maybeUnmount.unmount === "function") {
+            await maybeUnmount.unmount();
+          } else if (typeof module.unmount === "function") {
+            await module.unmount();
+          }
+        };
+        currentUiVersion = uiMeta.version || "0";
+      } catch (error) {
+        await unmountBotUi();
+        renderUiMessage("Bot UI failed to load", error.message || "Unknown bundle error.", "danger");
+      } finally {
+        botUiHost.dataset.loading = "false";
+      }
+    }
+
+    async function syncBotUi(bot, { force = false } = {}) {
+      const uiMeta = await loadBotUiMeta(bot.slug);
+      botUiPath.textContent = uiMeta.sourceDir || "Unavailable";
+      botUiDist.textContent = uiMeta.distDir || "Unavailable";
+      if (!force && currentUiVersion && uiMeta.version === currentUiVersion) {
+        botUiStatus.textContent = `${uiMeta.status || "unknown"} · v${uiMeta.version || "0"}`;
+        return;
+      }
+      await mountBotUi(bot, uiMeta);
+    }
+
+    function startUiPolling(bot) {
+      stopUiPolling();
+      currentPollTimer = window.setInterval(async () => {
+        if (document.visibilityState === "hidden") return;
+        try {
+          await syncBotUi(bot);
+        } catch (error) {
+          botUiStatus.textContent = error.message || "UI polling failed.";
+        }
+      }, 3000);
+    }
+
+    function renderSections(sections) {
+      if (!sections.length) {
+        brickGrid.innerHTML = `<div class="empty">No bricks defined.</div>`;
+        return;
+      }
+
+      brickGrid.innerHTML = sections.map((section) => `
+        <section class="panel strong">
+          <div class="section-head">
+            <div>
+              <h3>${section.title}</h3>
+              <p class="small muted">${section.bricks.length} bricks</p>
+            </div>
+          </div>
+          <div class="grid cards">
+            ${section.bricks.map(renderBrick).join("")}
+          </div>
+        </section>
+      `).join("");
+    }
+
+    async function loadLogs(slug) {
+      logsEl.textContent = "Loading logs...";
+      const response = await fetch(`/admin/api/bots/${slug}/logs?tail=250`);
+      const payload = await response.json();
+      logsEl.textContent = response.ok ? (payload.logs || "No logs yet.") : (payload.error || "Failed to load logs.");
+    }
+
+    async function sendBotChat(slug, message) {
+      const response = await fetch("/admin/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scope: "bot", slug, message }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || "Chat failed");
+      }
+      return payload.content;
+    }
+
+    async function loadBot() {
+      const slug = currentSlug();
+      stopUiPolling();
+      if (!slug) {
+        currentBot = null;
+        titleEl.textContent = "Bot slug missing";
+        subtitleEl.textContent = "Open a bot from the fleet dashboard.";
+        logsEl.textContent = "No bot selected.";
+        return;
+      }
+
+      const response = await fetch(`/admin/api/bots/${slug}`);
+      const payload = await response.json();
+      if (!response.ok) {
+        currentBot = null;
+        titleEl.textContent = "Bot not found";
+        subtitleEl.textContent = payload.error || "The requested bot could not be resolved.";
+        logsEl.textContent = payload.error || "No logs available.";
+        return;
+      }
+
+      const bot = payload.bot;
+      currentBot = bot;
+      titleEl.textContent = bot.name;
+      subtitleEl.textContent = `${bot.containerName} · ${bot.workspacePath}`;
+      renderStatus(bot);
+      renderSections(payload.ui?.layouts?.bot || []);
+      currentUiVersion = "";
+      await syncBotUi(bot, { force: true });
+      startUiPolling(bot);
+      await loadLogs(slug);
+    }
+
+    reloadLogs?.addEventListener("click", () => {
+      const slug = currentSlug();
+      if (slug) loadLogs(slug);
+    });
+
+    botChatForm?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const slug = currentSlug();
+      const message = botChatInput.value.trim();
+      if (!slug || !message) return;
+      appendChat(botChatLog, "user", message);
+      botChatInput.value = "";
+      botChatStatus.textContent = "Waiting for bot...";
+      try {
+        const content = await sendBotChat(slug, message);
+        appendChat(botChatLog, "assistant", content);
+        if (currentBot?.slug === slug) {
+          await syncBotUi(currentBot, { force: true });
+        }
+        botChatStatus.textContent = "Ready.";
+      } catch (error) {
+        appendChat(botChatLog, "assistant", `Error: ${error.message}`);
+        botChatStatus.textContent = error.message;
+      }
+    });
+
+    loadBot();
+  </script>
+</AdminLayout>
