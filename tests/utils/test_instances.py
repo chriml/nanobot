@@ -4,6 +4,7 @@ from nanobot.instances import (
     build_docker_instance_command,
     build_instance_command,
     build_onboard_command,
+    get_container_state_dir,
     get_instances_dir,
     list_instances,
     resolve_instance_paths,
@@ -131,13 +132,14 @@ def test_build_docker_instance_command_supports_extra_mounts_and_hosts(tmp_path:
         nanobot_args=["gateway"],
         detached=True,
         remove=False,
-        volume_mounts=["/tmp/whisper:/root/.cache/whisper"],
+        volume_mounts=["/tmp/whisper:/home/nanobot/.cache/whisper"],
         extra_hosts=["host.docker.internal:host-gateway"],
         environment={
             "NANOBOT_TOOLS__WEB__SEARCH__PROVIDER": "searxng",
             "NANOBOT_TOOLS__WEB__SEARCH__BASE_URL": "http://nanochris-searxng:8080",
         },
         network="nanochris-net",
+        user="1004:1004",
     )
 
     assert command == [
@@ -148,10 +150,12 @@ def test_build_docker_instance_command_supports_extra_mounts_and_hosts(tmp_path:
         "nanochris-nano-chris",
         "--network",
         "nanochris-net",
+        "--user",
+        "1004:1004",
         "-v",
-        f"{instance.root.expanduser().resolve(strict=False)}:/root/.nanobot",
+        f"{instance.root.expanduser().resolve(strict=False)}:{get_container_state_dir()}",
         "-v",
-        "/tmp/whisper:/root/.cache/whisper",
+        "/tmp/whisper:/home/nanobot/.cache/whisper",
         "--add-host",
         "host.docker.internal:host-gateway",
         "-e",

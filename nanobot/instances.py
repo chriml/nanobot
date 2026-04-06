@@ -117,6 +117,26 @@ def get_container_home() -> str:
     return os.environ.get("NANOCHRIS_CONTAINER_HOME") or "/home/nanobot"
 
 
+def get_container_user() -> str | None:
+    """Return the UID:GID that per-instance containers should run as."""
+    override = (
+        os.environ.get("NANOCHRIS_CONTAINER_USER")
+        or os.environ.get("NANOBOT_CONTAINER_USER")
+        or ""
+    ).strip()
+    if override:
+        return override
+
+    getuid = getattr(os, "getuid", None)
+    getgid = getattr(os, "getgid", None)
+    if callable(getuid) and callable(getgid):
+        try:
+            return f"{getuid()}:{getgid()}"
+        except OSError:
+            return None
+    return None
+
+
 def get_container_state_dir() -> str:
     """Return the base nanobot state directory used inside a per-instance container."""
     return f"{get_container_home()}/.nanobot"
@@ -146,6 +166,7 @@ def build_docker_instance_command(
     extra_hosts: list[str] | None = None,
     environment: dict[str, str] | None = None,
     network: str | None = None,
+    user: str | None = None,
 ) -> list[str]:
     """Build a Docker command for an isolated instance container."""
     command = ["docker", "run"]
@@ -161,6 +182,9 @@ def build_docker_instance_command(
         command.extend(["--name", resolved_name])
     if network:
         command.extend(["--network", network])
+    resolved_user = get_container_user() if user is None else user
+    if resolved_user:
+        command.extend(["--user", resolved_user])
 
     command.extend(
         [
