@@ -17,7 +17,7 @@ from nanobot.agent.context import ContextBuilder
 from nanobot.agent.hook import AgentHook, AgentHookContext, CompositeHook
 from nanobot.agent.memory import Consolidator, Dream
 from nanobot.agent.runner import AgentRunSpec, AgentRunner
-from nanobot.agent.subagent import SubagentManager
+from nanobot.agent.spawned import SpawnedAgentRuntime as _BaseSpawnedAgentRuntime
 from nanobot.agent.tools.cron import CronTool
 from nanobot.agent.skills import BUILTIN_SKILLS_DIR
 from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
@@ -42,6 +42,37 @@ if TYPE_CHECKING:
 
 
 UNIFIED_SESSION_KEY = "unified:default"
+
+
+class SpawnedAgentRuntime(_BaseSpawnedAgentRuntime):
+    """Loop-local compatibility wrapper for legacy constructor and patch sites."""
+
+    def __init__(
+        self,
+        provider: LLMProvider,
+        workspace: Path,
+        bus: MessageBus,
+        max_tool_result_chars: int,
+        model: str | None = None,
+        web_config: WebToolsConfig | None = None,
+        exec_config: ExecToolConfig | None = None,
+        restrict_to_workspace: bool = False,
+    ) -> None:
+        super().__init__(
+            provider=provider,
+            workspace=workspace,
+            bus=bus,
+            model=model,
+            web_search_config=web_config.search if web_config else None,
+            web_proxy=web_config.proxy if web_config else None,
+            exec_config=exec_config,
+            restrict_to_workspace=restrict_to_workspace,
+            max_tool_result_chars=max_tool_result_chars,
+        )
+
+
+SubagentManager = SpawnedAgentRuntime
+_DEFAULT_SPAWN_RUNTIME = SpawnedAgentRuntime
 
 class _LoopHook(AgentHook):
     """Core hook for the main loop."""
@@ -185,7 +216,10 @@ class AgentLoop:
         self.sessions = session_manager or SessionManager(workspace)
         self.tools = ToolRegistry()
         self.runner = AgentRunner(provider)
-        self.spawned_agents = SubagentManager(
+        spawn_runtime_cls = SpawnedAgentRuntime
+        if spawn_runtime_cls is _DEFAULT_SPAWN_RUNTIME and SubagentManager is not _DEFAULT_SPAWN_RUNTIME:
+            spawn_runtime_cls = SubagentManager
+        self.spawned_agents = spawn_runtime_cls(
             provider=provider,
             workspace=workspace,
             bus=bus,
