@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from nanobot.agent.memory import Dream, MemoryStore
 from nanobot.agent.runner import AgentRunResult
+from nanobot.agent.skills import BUILTIN_SKILLS_DIR
 from nanobot.providers.base import LLMResponse
 
 
@@ -109,3 +110,30 @@ class TestDreamRun:
         assert result is False
         assert store.get_last_dream_cursor() == 0
         mock_runner.run.assert_not_called()
+
+    async def test_skill_phase_uses_builtin_skill_creator_path(self, dream, mock_provider, mock_runner, store):
+        """Dream should point skill creation guidance at the builtin skill-creator template."""
+        store.append_history("Repeated workflow one")
+        store.append_history("Repeated workflow two")
+        mock_provider.chat_with_retry.return_value = MagicMock(content="[SKILL] test-skill: test description")
+        mock_runner.run = AsyncMock(return_value=_make_run_result())
+
+        await dream.run()
+
+        spec = mock_runner.run.call_args[0][0]
+        system_prompt = spec.initial_messages[0]["content"]
+        expected = str(BUILTIN_SKILLS_DIR / "skill-creator" / "SKILL.md")
+        assert expected in system_prompt
+
+    async def test_skill_write_tool_accepts_workspace_relative_skill_path(self, dream, store):
+        """Dream skill creation should allow skills/<name>/SKILL.md relative to workspace root."""
+        write_tool = dream._tools.get("write_file")
+        assert write_tool is not None
+
+        result = await write_tool.execute(
+            path="skills/test-skill/SKILL.md",
+            content="---\nname: test-skill\ndescription: Test\n---\n",
+        )
+
+        assert "Successfully wrote" in result
+        assert (store.workspace / "skills" / "test-skill" / "SKILL.md").exists()
